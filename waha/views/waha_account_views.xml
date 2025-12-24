@@ -27,38 +27,45 @@
                         </button>
                     </div>
                     
+                    <div class="oe_title">
+                        <label for="name" string="Account Name"/>
+                        <h1>
+                            <field name="name" placeholder="e.g., Main WhatsApp Account"/>
+                        </h1>
+                    </div>
+                    
                     <!-- QR Code Display -->
-                    <div class="row" invisible="not qr_code">
-                        <div class="col-md-12 text-center">
-                            <field name="qr_code" widget="image" class="mb-3"/>
+                    <div invisible="not qr_code" class="mt-3 mb-3">
+                        <div class="text-center">
+                            <field name="qr_code" widget="image" class="mb-3" options="{'size': [300, 300]}"/>
                             <div class="alert alert-info">
                                 <strong>Scan this QR code with WhatsApp</strong><br/>
-                                Open WhatsApp > Settings > Linked Devices > Link a Device
+                                Open WhatsApp &gt; Settings &gt; Linked Devices &gt; Link a Device
                             </div>
                         </div>
                     </div>
 
                     <group>
-                        <group string="Account Information">
-                            <field name="name"/>
-                            <field name="active"/>
-                            <field name="phone_uid" readonly="1"/>
+                        <group string="General Information">
+                            <field name="active" widget="boolean_toggle"/>
+                            <field name="phone_uid" readonly="1" placeholder="Will be filled after connection"/>
                         </group>
-                        <group string="WAHA Configuration">
-                            <field name="waha_url"/>
-                            <field name="session_name"/>
-                            <field name="api_key" password="True" groups="waha.group_waha_admin"/>
+                        <group string="WAHA Server Configuration">
+                            <field name="waha_url" placeholder="http://localhost:3000"/>
+                            <field name="session_name" placeholder="default"/>
+                            <field name="api_key" password="True" groups="waha.group_waha_admin" placeholder="Optional API Key"/>
                         </group>
                     </group>
 
                     <group>
-                        <group string="Webhook">
+                        <group string="Webhook Configuration">
                             <field name="callback_url" readonly="1" widget="url"/>
                             <field name="webhook_verify_token" password="True" 
                                    groups="waha.group_waha_admin"/>
                         </group>
                         <group string="Notifications">
-                            <field name="notify_user_ids" widget="many2many_tags"/>
+                            <field name="notify_user_ids" widget="many2many_tags" 
+                                   placeholder="Select users to notify"/>
                             <field name="allowed_company_ids" widget="many2many_tags"
                                    groups="base.group_multi_company"/>
                         </group>
