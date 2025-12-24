@@ -133,7 +133,7 @@ class WahaApi:
 
     def get_qr_code(self):
         """Get QR code for session"""
-        return self._make_request('GET', f'/api/sessions/{self.session_name}/qr')
+        return self._make_request('GET', f'/api/{self.session_name}/auth/qr')
 
     def get_screenshot(self):
         """Get screenshot of WhatsApp Web"""
