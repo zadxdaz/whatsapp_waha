@@ -143,25 +143,25 @@ class WahaWebhookController(http.Controller):
             # Get the admin user to add to the channel (use sudo to avoid access error)
             admin_user = request.env.ref('base.user_admin').sudo()
             
+            # Always use a group channel (type 'channel') for WhatsApp
             channel = request.env['discuss.channel'].sudo().search([
-                ('channel_partner_ids', 'in', [partner.id]),
-                ('channel_type', '=', 'chat')
+                ('name', '=', f'WhatsApp: {partner.name}'),
+                ('channel_type', '=', 'channel')
             ], limit=1)
-            
-            if not channel:
-                # Create new chat channel with admin and partner
+
+            required_partner_ids = set([partner.id, admin_user.partner_id.id])
+            if channel:
+                # Ensure all required partners are in the channel
+                missing_ids = required_partner_ids - set(channel.channel_partner_ids.ids)
+                if missing_ids:
+                    channel.write({'channel_partner_ids': [(4, pid) for pid in missing_ids]})
+            else:
                 channel = request.env['discuss.channel'].sudo().create({
                     'name': f'WhatsApp: {partner.name}',
-                    'channel_type': 'chat',
-                    'channel_partner_ids': [(4, partner.id), (4, admin_user.partner_id.id)],
+                    'channel_type': 'channel',
+                    'channel_partner_ids': [(6, 0, list(required_partner_ids))],
                 })
-                _logger.info('Created new chat channel for partner: %s', partner.name)
-            else:
-                # Ensure admin is in the channel
-                if admin_user.partner_id.id not in channel.channel_partner_ids.ids:
-                    channel.write({
-                        'channel_partner_ids': [(4, admin_user.partner_id.id)]
-                    })
+                _logger.info('Created new group channel for partner: %s', partner.name)
             
             # Post message to the channel
             mail_message = channel.message_post(
