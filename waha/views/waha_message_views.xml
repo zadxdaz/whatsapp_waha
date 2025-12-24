@@ -54,7 +54,7 @@
         <field name="name">waha.message.tree</field>
         <field name="model">waha.message</field>
         <field name="arch" type="xml">
-            <tree string="WhatsApp Messages">
+            <list string="WhatsApp Messages">
                 <field name="create_date"/>
                 <field name="wa_account_id"/>
                 <field name="mobile_number"/>
@@ -66,7 +66,7 @@
                        decoration-warning="state=='read'"
                        decoration-danger="state=='error'"
                        widget="badge"/>
-            </tree>
+            </list>
         </field>
     </record>
 

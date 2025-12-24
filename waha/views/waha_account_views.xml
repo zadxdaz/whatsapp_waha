@@ -77,7 +77,7 @@
         <field name="name">waha.account.tree</field>
         <field name="model">waha.account</field>
         <field name="arch" type="xml">
-            <tree string="WAHA Accounts">
+            <list string="WAHA Accounts">
                 <field name="name"/>
                 <field name="session_name"/>
                 <field name="phone_uid"/>
@@ -87,7 +87,7 @@
                        decoration-danger="status=='error'"
                        widget="badge"/>
                 <field name="templates_count"/>
-            </tree>
+            </list>
         </field>
     </record>
 
