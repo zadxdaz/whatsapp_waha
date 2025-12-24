@@ -1,0 +1,13 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_waha_account_user,waha.account.user,model_waha_account,group_waha_user,1,0,0,0
+access_waha_account_admin,waha.account.admin,model_waha_account,group_waha_admin,1,1,1,1
+access_waha_message_user,waha.message.user,model_waha_message,group_waha_user,1,1,1,0
+access_waha_message_admin,waha.message.admin,model_waha_message,group_waha_admin,1,1,1,1
+access_waha_template_user,waha.template.user,model_waha_template,group_waha_user,1,0,0,0
+access_waha_template_admin,waha.template.admin,model_waha_template,group_waha_admin,1,1,1,1
+access_waha_template_button_user,waha.template.button.user,model_waha_template_button,group_waha_user,1,0,0,0
+access_waha_template_button_admin,waha.template.button.admin,model_waha_template_button,group_waha_admin,1,1,1,1
+access_waha_template_variable_user,waha.template.variable.user,model_waha_template_variable,group_waha_user,1,0,0,0
+access_waha_template_variable_admin,waha.template.variable.admin,model_waha_template_variable,group_waha_admin,1,1,1,1
+access_waha_composer_user,waha.composer.user,model_waha_composer,group_waha_user,1,1,1,1
+access_waha_preview_user,waha.preview.user,model_waha_preview,group_waha_user,1,1,1,1

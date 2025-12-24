@@ -1,0 +1,8 @@
+PNG placeholder - In production, convert the SVG to PNG or use the SVG directly.
+
+To convert:
+1. Use an online converter like cloudconvert.com
+2. Or use ImageMagick: convert icon.svg icon.png
+3. Ensure size is 128x128px
+
+For now, Odoo will use the SVG if PNG is not found.

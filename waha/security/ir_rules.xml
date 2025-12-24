@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- WAHA Account Rules -->
+    <record id="waha_account_rule_user" model="ir.rule">
+        <field name="name">WAHA Account: User: see their company accounts</field>
+        <field name="model_id" ref="model_waha_account"/>
+        <field name="domain_force">[('allowed_company_ids', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_waha_user'))]"/>
+    </record>
+
+    <record id="waha_account_rule_admin" model="ir.rule">
+        <field name="name">WAHA Account: Admin: see all accounts</field>
+        <field name="model_id" ref="model_waha_account"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_waha_admin'))]"/>
+    </record>
+
+    <!-- WAHA Message Rules -->
+    <record id="waha_message_rule_user" model="ir.rule">
+        <field name="name">WAHA Message: User: see messages from their accounts</field>
+        <field name="model_id" ref="model_waha_message"/>
+        <field name="domain_force">[('wa_account_id.allowed_company_ids', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_waha_user'))]"/>
+    </record>
+
+    <!-- WAHA Template Rules -->
+    <record id="waha_template_rule_user" model="ir.rule">
+        <field name="name">WAHA Template: User: see templates from their accounts</field>
+        <field name="model_id" ref="model_waha_template"/>
+        <field name="domain_force">['|', ('wa_account_id', '=', False), ('wa_account_id.allowed_company_ids', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_waha_user'))]"/>
+    </record>
+</odoo>

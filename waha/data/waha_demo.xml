@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Demo WAHA Account -->
+    <record id="waha_account_demo" model="waha.account">
+        <field name="name">Demo WhatsApp Account</field>
+        <field name="waha_url">http://localhost:3000</field>
+        <field name="session_name">demo</field>
+        <field name="status">disconnected</field>
+    </record>
+
+    <!-- Demo Template -->
+    <record id="waha_template_demo_welcome" model="waha.template">
+        <field name="name">Welcome Message</field>
+        <field name="wa_account_id" ref="waha_account_demo"/>
+        <field name="model_id" ref="base.model_res_partner"/>
+        <field name="phone_field">mobile</field>
+        <field name="status">approved</field>
+        <field name="header_type">text</field>
+        <field name="header_text">Welcome!</field>
+        <field name="body">Hello {{object.name}}, welcome to our service!</field>
+        <field name="footer_text">Thank you for choosing us</field>
+    </record>
+</odoo>

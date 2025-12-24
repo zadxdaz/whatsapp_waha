@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- WAHA Account Form View -->
+    <record id="view_waha_account_form" model="ir.ui.view">
+        <field name="name">waha.account.form</field>
+        <field name="model">waha.account</field>
+        <field name="arch" type="xml">
+            <form string="WAHA Account">
+                <header>
+                    <button name="action_connect" string="Connect" type="object" 
+                            class="oe_highlight"
+                            attrs="{'invisible': [('status', '!=', 'disconnected')]}"/>
+                    <button name="action_get_qr" string="Get QR Code" type="object"
+                            class="oe_highlight"
+                            attrs="{'invisible': [('status', 'not in', ['connecting', 'connected'])]}"/>
+                    <button name="action_refresh_status" string="Refresh Status" type="object"/>
+                    <button name="action_disconnect" string="Disconnect" type="object"
+                            attrs="{'invisible': [('status', 'not in', ['connected', 'connecting'])]}"/>
+                    <field name="status" widget="statusbar"
+                           statusbar_visible="disconnected,connecting,connected"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="%(action_waha_template)d" type="action"
+                                class="oe_stat_button" icon="fa-commenting">
+                            <field name="templates_count" widget="statbutton" string="Templates"/>
+                        </button>
+                    </div>
+                    
+                    <!-- QR Code Display -->
+                    <div class="row" attrs="{'invisible': [('qr_code', '=', False)]}">
+                        <div class="col-md-12 text-center">
+                            <field name="qr_code" widget="image" class="mb-3"/>
+                            <div class="alert alert-info">
+                                <strong>Scan this QR code with WhatsApp</strong><br/>
+                                Open WhatsApp > Settings > Linked Devices > Link a Device
+                            </div>
+                        </div>
+                    </div>
+
+                    <group>
+                        <group string="Account Information">
+                            <field name="name"/>
+                            <field name="active"/>
+                            <field name="phone_uid" readonly="1"/>
+                        </group>
+                        <group string="WAHA Configuration">
+                            <field name="waha_url"/>
+                            <field name="session_name"/>
+                            <field name="api_key" password="True" groups="waha.group_waha_admin"/>
+                        </group>
+                    </group>
+
+                    <group>
+                        <group string="Webhook">
+                            <field name="callback_url" readonly="1" widget="url"/>
+                            <field name="webhook_verify_token" password="True" 
+                                   groups="waha.group_waha_admin"/>
+                        </group>
+                        <group string="Notifications">
+                            <field name="notify_user_ids" widget="many2many_tags"/>
+                            <field name="allowed_company_ids" widget="many2many_tags"
+                                   groups="base.group_multi_company"/>
+                        </group>
+                    </group>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <!-- WAHA Account Tree View -->
+    <record id="view_waha_account_tree" model="ir.ui.view">
+        <field name="name">waha.account.tree</field>
+        <field name="model">waha.account</field>
+        <field name="arch" type="xml">
+            <tree string="WAHA Accounts">
+                <field name="name"/>
+                <field name="session_name"/>
+                <field name="phone_uid"/>
+                <field name="status" 
+                       decoration-success="status=='connected'"
+                       decoration-info="status=='connecting'"
+                       decoration-danger="status=='error'"
+                       widget="badge"/>
+                <field name="templates_count"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- WAHA Account Action -->
+    <record id="action_waha_account" model="ir.actions.act_window">
+        <field name="name">WhatsApp Accounts</field>
+        <field name="res_model">waha.account</field>
+        <field name="view_mode">tree,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create your first WAHA Account
+            </p>
+            <p>
+                Connect your WhatsApp number using WAHA (WhatsApp HTTP API).<br/>
+                Make sure you have WAHA server running before connecting.
+            </p>
+        </field>
+    </record>
+</odoo>

@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- WAHA Composer Form View -->
+    <record id="view_waha_composer_form" model="ir.ui.view">
+        <field name="name">waha.composer.form</field>
+        <field name="model">waha.composer</field>
+        <field name="arch" type="xml">
+            <form string="Send WhatsApp Message">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="wa_account_id"/>
+                            <field name="mobile_number"/>
+                            <field name="mobile_number_formatted" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="use_template"/>
+                            <field name="wa_template_id"
+                                   attrs="{'invisible': [('use_template', '=', False)],
+                                           'required': [('use_template', '=', True)]}"/>
+                            <field name="res_model" invisible="1"/>
+                            <field name="res_id" invisible="1"/>
+                        </group>
+                    </group>
+
+                    <notebook>
+                        <page string="Message" name="message">
+                            <group>
+                                <field name="body" nolabel="1" widget="html"
+                                       placeholder="Type your WhatsApp message here..."
+                                       attrs="{'readonly': [('use_template', '=', True)]}"/>
+                            </group>
+                        </page>
+
+                        <page string="Preview" name="preview">
+                            <group>
+                                <div class="alert alert-info">
+                                    <strong>Message Preview</strong><br/>
+                                    This is how your message will appear with variables replaced.
+                                </div>
+                                <field name="preview_body" nolabel="1" widget="html" readonly="1"/>
+                            </group>
+                        </page>
+
+                        <page string="Attachments" name="attachments">
+                            <field name="attachment_ids" widget="many2many_binary" nolabel="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+
+                <footer>
+                    <button name="action_send_message" string="Send" type="object"
+                            class="btn-primary"/>
+                    <button name="action_schedule_message" string="Schedule" type="object"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- WAHA Composer Action -->
+    <record id="action_waha_composer" model="ir.actions.act_window">
+        <field name="name">Send WhatsApp Message</field>
+        <field name="res_model">waha.composer</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+</odoo>

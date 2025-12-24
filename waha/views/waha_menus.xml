@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- WhatsApp Main Menu -->
+    <menuitem id="menu_waha_root"
+              name="WhatsApp"
+              web_icon="waha,static/description/icon.png"
+              sequence="85"/>
+
+    <!-- Configuration Menu -->
+    <menuitem id="menu_waha_config"
+              name="Configuration"
+              parent="menu_waha_root"
+              sequence="100"/>
+
+    <!-- Accounts Menu -->
+    <menuitem id="menu_waha_account"
+              name="Accounts"
+              parent="menu_waha_config"
+              action="action_waha_account"
+              sequence="10"/>
+
+    <!-- Templates Menu -->
+    <menuitem id="menu_waha_template"
+              name="Templates"
+              parent="menu_waha_root"
+              action="action_waha_template"
+              sequence="20"/>
+
+    <!-- Messages Menu -->
+    <menuitem id="menu_waha_message"
+              name="Messages"
+              parent="menu_waha_root"
+              action="action_waha_message"
+              sequence="30"/>
+</odoo>

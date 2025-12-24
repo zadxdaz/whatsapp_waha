@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Add WhatsApp stat button to partner form -->
+    <record id="view_partner_form_inherit_waha" model="ir.ui.view">
+        <field name="name">res.partner.form.inherit.waha</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_form"/>
+        <field name="arch" type="xml">
+            <!-- Add WhatsApp stat button -->
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_view_whatsapp_messages" type="object"
+                        class="oe_stat_button" icon="fa-whatsapp"
+                        attrs="{'invisible': [('waha_messages_count', '=', 0)]}">
+                    <field name="waha_messages_count" widget="statbutton" string="WhatsApp"/>
+                </button>
+                <button name="action_send_whatsapp_message" type="object"
+                        class="oe_stat_button" icon="fa-whatsapp"
+                        attrs="{'invisible': ['|', ('mobile', '=', False), ('phone', '=', False)]}">
+                    <span>Send WhatsApp</span>
+                </button>
+            </xpath>
+
+            <!-- Add WhatsApp account field -->
+            <xpath expr="//field[@name='user_id']" position="after">
+                <field name="wa_account_id" 
+                       attrs="{'invisible': ['|', ('mobile', '=', False), ('phone', '=', False)]}"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

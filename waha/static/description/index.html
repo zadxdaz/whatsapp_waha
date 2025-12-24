@@ -1,0 +1,219 @@
+# WAHA Messaging - WhatsApp Integration for Odoo
+
+## Overview
+
+This module integrates Odoo v18 with WAHA (WhatsApp HTTP API), enabling you to send and receive WhatsApp messages directly from your Odoo instance.
+
+WAHA is a self-hosted, open-source WhatsApp HTTP API that runs in Docker, giving you full control over your WhatsApp communication without relying on third-party services.
+
+## Features
+
+### Core Functionality
+- ✅ Send and receive WhatsApp messages
+- ✅ QR code authentication
+- ✅ Multi-account support
+- ✅ Message templates with variables
+- ✅ Webhook integration for real-time message sync
+- ✅ Message status tracking (sent, delivered, read)
+
+### Integration
+- ✅ Partner integration - Send WhatsApp from contact form
+- ✅ Chatter integration - Messages appear in timeline
+- ✅ Template system - Create reusable message templates
+- ✅ Attachment support - Send images, videos, documents
+
+### Administration
+- ✅ Multi-company support
+- ✅ User and admin permission groups
+- ✅ Automated status monitoring (cron job)
+- ✅ Comprehensive logging and error handling
+
+## Installation
+
+### Prerequisites
+
+1. **WAHA Server**: You need a running WAHA instance. Install with Docker:
+
+```bash
+docker run -d \
+  --name waha \
+  -p 3000:3000 \
+  -e WHATSAPP_HOOK_URL=http://your-odoo-server/waha/webhook \
+  -e WHATSAPP_HOOK_EVENTS=message,message.ack,session.status \
+  devlikeapro/waha
+```
+
+2. **Python Dependencies**:
+```bash
+pip install phonenumbers requests
+```
+
+### Module Installation
+
+1. Copy this module to your Odoo addons directory
+2. Update the app list: Settings → Apps → Update Apps List
+3. Search for "WAHA Messaging" and click Install
+
+## Configuration
+
+### 1. Create WhatsApp Account
+
+Navigate to: **WhatsApp → Configuration → Accounts → Create**
+
+Fill in:
+- **Name**: Descriptive name (e.g., "Main Support Line")
+- **WAHA URL**: Your WAHA server URL (e.g., `http://localhost:3000`)
+- **Session Name**: Unique session identifier (e.g., `default`)
+- **API Key**: Your WAHA API key (if authentication enabled)
+- **Webhook Verify Token**: Random token for webhook security
+
+### 2. Connect WhatsApp
+
+1. Click **Connect** button
+2. Click **Get QR Code**
+3. Scan QR code with WhatsApp mobile app:
+   - Open WhatsApp
+   - Go to Settings → Linked Devices
+   - Tap "Link a Device"
+   - Scan the QR code
+
+### 3. Create Message Templates
+
+Navigate to: **WhatsApp → Templates → Create**
+
+Example template:
+```
+Hello {{name}},
+
+Your order #{{order_number}} has been confirmed!
+
+Total amount: ${{total}}
+
+Thank you for your business.
+```
+
+Variables are automatically extracted and can be mapped to Odoo fields.
+
+## Usage
+
+### Send WhatsApp from Partner
+
+1. Open any contact (res.partner)
+2. Click "Send WhatsApp" button
+3. Select template or write custom message
+4. Click Send
+
+### Send Bulk Messages
+
+Use the WhatsApp composer wizard:
+- **WhatsApp → Messages → Create**
+
+### Receive Messages
+
+Incoming messages are automatically:
+- Stored in waha.message model
+- Linked to partner (if phone number matches)
+- Posted to partner's chatter
+
+## Technical Details
+
+### Models
+
+- `waha.account`: WhatsApp accounts
+- `waha.message`: Message tracking
+- `waha.template`: Message templates
+- `waha.template.variable`: Template variables
+- `waha.template.button`: Template buttons
+- `waha.composer`: Message composer wizard
+
+### Controllers
+
+- `/waha/webhook`: Webhook endpoint for WAHA callbacks
+
+### Security
+
+- `group_waha_user`: Basic user permissions
+- `group_waha_admin`: Full administrative access
+- Multi-company record rules
+
+### Cron Jobs
+
+- **Status Check** (every 15 minutes): Verifies connection status
+
+## Troubleshooting
+
+### Connection Issues
+
+**Problem**: Account stays in "Connecting" state
+
+**Solutions**:
+1. Verify WAHA server is running: `curl http://localhost:3000/health`
+2. Check WAHA logs: `docker logs waha`
+3. Ensure session_name is unique
+4. Try disconnecting and reconnecting
+
+### Messages Not Sending
+
+**Problem**: Messages stuck in "Outgoing" state
+
+**Solutions**:
+1. Check account status is "Connected"
+2. Verify phone number format (E.164 format: +1234567890)
+3. Check WAHA API logs
+4. Review message error details in message form
+
+### Webhook Not Working
+
+**Problem**: Incoming messages not appearing
+
+**Solutions**:
+1. Verify webhook URL is accessible from WAHA server
+2. Check webhook verify token matches
+3. Review Odoo logs for webhook errors
+4. Test webhook manually:
+```bash
+curl -X POST http://your-odoo/waha/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Token: your-token" \
+  -d '{"event":"message","session":"default","payload":{}}'
+```
+
+## WAHA Configuration
+
+### Environment Variables
+
+When running WAHA container, use these environment variables:
+
+```bash
+WHATSAPP_HOOK_URL=http://your-odoo-server/waha/webhook
+WHATSAPP_HOOK_EVENTS=message,message.ack,session.status
+WHATSAPP_API_KEY=your-secret-key
+```
+
+### Recommended WAHA Version
+
+This module is tested with WAHA version 2023.10+
+
+## Support
+
+- **Documentation**: See WAHA docs at https://waha.devlike.pro
+- **Issues**: Report bugs via Odoo module feedback
+- **Community**: Join Odoo WhatsApp integration discussions
+
+## License
+
+LGPL-3
+
+## Credits
+
+- WAHA Project: https://github.com/devlikeapro/waha
+- Odoo Official WhatsApp Module (reference implementation)
+
+## Changelog
+
+### Version 1.0 (2024)
+- Initial release
+- Core messaging functionality
+- Template system
+- Webhook integration
+- Partner integration

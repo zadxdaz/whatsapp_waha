@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Server Action: Send WhatsApp Message -->
+    <record id="action_server_waha_send_message" model="ir.actions.server">
+        <field name="name">Send WhatsApp Message</field>
+        <field name="model_id" ref="base.model_res_partner"/>
+        <field name="binding_model_id" ref="base.model_res_partner"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    action = env['ir.actions.actions']._for_xml_id('waha.action_waha_composer')
+    action['context'] = {
+        'default_res_model': 'res.partner',
+        'default_res_ids': str(records.ids),
+        'default_batch_mode': len(records) > 1,
+    }
+    result = action
+        </field>
+    </record>
+</odoo>

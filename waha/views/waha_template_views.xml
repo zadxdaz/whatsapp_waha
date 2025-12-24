@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- WAHA Template Form View -->
+    <record id="view_waha_template_form" model="ir.ui.view">
+        <field name="name">waha.template.form</field>
+        <field name="model">waha.template</field>
+        <field name="arch" type="xml">
+            <form string="WhatsApp Template">
+                <header>
+                    <button name="action_approve" string="Approve" type="object"
+                            class="oe_highlight"
+                            attrs="{'invisible': [('status', '=', 'approved')]}"/>
+                    <button name="action_reset_to_draft" string="Reset to Draft" type="object"
+                            attrs="{'invisible': [('status', '=', 'draft')]}"/>
+                    <field name="status" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_messages" type="object"
+                                class="oe_stat_button" icon="fa-envelope">
+                            <field name="messages_count" widget="statbutton" string="Messages"/>
+                        </button>
+                    </div>
+
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="wa_account_id"/>
+                            <field name="lang"/>
+                        </group>
+                        <group>
+                            <field name="model_id"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="active"/>
+                        </group>
+                    </group>
+
+                    <notebook>
+                        <page string="Content" name="content">
+                            <group string="Header">
+                                <field name="header_type"/>
+                                <field name="header_text" 
+                                       attrs="{'invisible': [('header_type', '!=', 'text')],
+                                               'required': [('header_type', '=', 'text')]}"/>
+                                <field name="header_attachment_id"
+                                       attrs="{'invisible': [('header_type', 'not in', ['image', 'video', 'document'])],
+                                               'required': [('header_type', 'in', ['image', 'video', 'document'])]}"/>
+                            </group>
+
+                            <group string="Body">
+                                <field name="body" nolabel="1" widget="html"
+                                       placeholder="Use {{variable_name}} for dynamic content"/>
+                            </group>
+
+                            <group string="Footer">
+                                <field name="footer_text" nolabel="1"/>
+                            </group>
+                        </page>
+
+                        <page string="Variables" name="variables">
+                            <field name="variable_ids">
+                                <tree editable="bottom">
+                                    <field name="sequence" widget="handle"/>
+                                    <field name="name"/>
+                                    <field name="field_name"/>
+                                    <field name="field_type"/>
+                                    <field name="demo_value"/>
+                                </tree>
+                            </field>
+                        </page>
+
+                        <page string="Buttons" name="buttons">
+                            <field name="button_ids">
+                                <tree editable="bottom">
+                                    <field name="sequence" widget="handle"/>
+                                    <field name="button_type"/>
+                                    <field name="name"/>
+                                    <field name="url" attrs="{'invisible': [('button_type', '!=', 'url')]}"/>
+                                    <field name="url_type" attrs="{'invisible': [('button_type', '!=', 'url')]}"/>
+                                    <field name="phone_number" attrs="{'invisible': [('button_type', '!=', 'phone')]}"/>
+                                    <field name="payload" attrs="{'invisible': [('button_type', '!=', 'quick_reply')]}"/>
+                                </tree>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="activity_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <!-- WAHA Template Tree View -->
+    <record id="view_waha_template_tree" model="ir.ui.view">
+        <field name="name">waha.template.tree</field>
+        <field name="model">waha.template</field>
+        <field name="arch" type="xml">
+            <tree string="WhatsApp Templates">
+                <field name="name"/>
+                <field name="wa_account_id"/>
+                <field name="model_id"/>
+                <field name="status" decoration-success="status=='approved'" widget="badge"/>
+                <field name="messages_count"/>
+                <field name="lang"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- WAHA Template Kanban View -->
+    <record id="view_waha_template_kanban" model="ir.ui.view">
+        <field name="name">waha.template.kanban</field>
+        <field name="model">waha.template</field>
+        <field name="arch" type="xml">
+            <kanban>
+                <field name="name"/>
+                <field name="status"/>
+                <field name="messages_count"/>
+                <templates>
+                    <t t-name="kanban-box">
+                        <div class="oe_kanban_global_click">
+                            <div class="o_kanban_record_top">
+                                <div class="o_kanban_record_headings">
+                                    <strong class="o_kanban_record_title">
+                                        <field name="name"/>
+                                    </strong>
+                                </div>
+                                <span class="float-right badge badge-pill"
+                                      t-att-class="record.status.raw_value === 'approved' ? 'badge-success' : 'badge-secondary'">
+                                    <field name="status"/>
+                                </span>
+                            </div>
+                            <div class="o_kanban_record_body">
+                                <field name="body" widget="html"/>
+                            </div>
+                            <div class="o_kanban_record_bottom">
+                                <div class="oe_kanban_bottom_left">
+                                    <field name="wa_account_id"/>
+                                </div>
+                                <div class="oe_kanban_bottom_right">
+                                    <span class="badge badge-pill">
+                                        <i class="fa fa-envelope"/> <field name="messages_count"/>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <!-- WAHA Template Search View -->
+    <record id="view_waha_template_search" model="ir.ui.view">
+        <field name="name">waha.template.search</field>
+        <field name="model">waha.template</field>
+        <field name="arch" type="xml">
+            <search string="WhatsApp Templates">
+                <field name="name"/>
+                <field name="wa_account_id"/>
+                <filter string="Approved" name="approved" domain="[('status', '=', 'approved')]"/>
+                <filter string="Draft" name="draft" domain="[('status', '=', 'draft')]"/>
+                <separator/>
+                <filter string="Archived" name="archived" domain="[('active', '=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Account" name="group_account" context="{'group_by': 'wa_account_id'}"/>
+                    <filter string="Status" name="group_status" context="{'group_by': 'status'}"/>
+                    <filter string="Model" name="group_model" context="{'group_by': 'model_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- WAHA Template Action -->
+    <record id="action_waha_template" model="ir.actions.act_window">
+        <field name="name">WhatsApp Templates</field>
+        <field name="res_model">waha.template</field>
+        <field name="view_mode">kanban,tree,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create your first WhatsApp Template
+            </p>
+            <p>
+                Templates allow you to send structured messages with buttons and variables.<br/>
+                Use {{variable_name}} syntax to add dynamic content.
+            </p>
+        </field>
+    </record>
+</odoo>
