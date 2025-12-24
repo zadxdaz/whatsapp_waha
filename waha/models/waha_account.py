@@ -3,6 +3,7 @@
 import logging
 import secrets
 import string
+import requests
 from datetime import timedelta
 
 from odoo import api, fields, models, _
@@ -174,87 +175,123 @@ class WahaAccount(models.Model):
     def action_connect(self):
         """Start WAHA session connection"""
         self.ensure_one()
-        api = WahaApi(self)
-        result = api.start_session()
-        self.write({'status': 'connecting'})
-        self.message_post(body=_('Session connection initiated'))
-        return self.action_get_qr()
+        try:
+            api = WahaApi(self)
+            result = api.start_session()
+            self.write({'status': 'connecting'})
+            self.message_post(body=_('Session connection initiated'))
+            return self.action_get_qr()
+        except requests.exceptions.ConnectionError:
+            self.write({'status': 'error'})
+            raise UserError(_(
+                "Cannot connect to WAHA server at %s\n\n"
+                "Please verify:\n"
+                "• WAHA server is running\n"
+                "• The URL is correct\n"
+                "• No firewall is blocking the connection"
+            ) % self.waha_url)
+        except requests.exceptions.Timeout:
+            self.write({'status': 'error'})
+            raise UserError(_(
+                "WAHA server timeout at %s\n\n"
+                "The server is not responding. Please check if WAHA is running properly."
+            ) % self.waha_url)
+        except Exception as e:
+            self.write({'status': 'error'})
+            raise UserError(_("Error connecting to WAHA: %s") % str(e))
 
     def action_get_qr(self):
         """Get QR code for scanning"""
         self.ensure_one()
-        api = WahaApi(self)
-        qr_data = api.get_qr_code()
+        try:
+            api = WahaApi(self)
+            qr_data = api.get_qr_code()
 
-        if qr_data.get('qr'):
-            # Store QR code as base64
-            import base64
-            qr_base64 = qr_data['qr']
-            if ',' in qr_base64:
-                qr_base64 = qr_base64.split(',')[1]
-            self.qr_code = qr_base64
-            self.qr_code_expiry = fields.Datetime.now() + timedelta(minutes=2)
+            if qr_data.get('qr'):
+                # Store QR code as base64
+                import base64
+                qr_base64 = qr_data['qr']
+                if ',' in qr_base64:
+                    qr_base64 = qr_base64.split(',')[1]
+                self.qr_code = qr_base64
+                self.qr_code_expiry = fields.Datetime.now() + timedelta(minutes=2)
 
-        return {
-            'type': 'ir.actions.act_window',
-            'res_model': 'waha.account',
-            'res_id': self.id,
-            'view_mode': 'form',
-            'target': 'current',
-        }
+            return {
+                'type': 'ir.actions.act_window',
+                'res_model': 'waha.account',
+                'res_id': self.id,
+                'view_mode': 'form',
+                'target': 'current',
+            }
+        except requests.exceptions.ConnectionError:
+            raise UserError(_("Cannot connect to WAHA server at %s") % self.waha_url)
+        except Exception as e:
+            raise UserError(_("Error getting QR code: %s") % str(e))
 
     def action_refresh_status(self):
         """Refresh connection status from WAHA"""
         self.ensure_one()
-        api = WahaApi(self)
-        status_data = api.get_session_status()
+        try:
+            api = WahaApi(self)
+            status_data = api.get_session_status()
 
-        # Map WAHA status to model status
-        waha_status = status_data.get('status', 'DISCONNECTED')
-        if waha_status in ['WORKING', 'CONNECTED']:
-            self.status = 'connected'
-            self.qr_code = False  # Clear QR when connected
-            # Try to get phone number
-            if 'me' in status_data:
-                self.phone_uid = status_data['me'].get('id', '')
-        elif waha_status in ['STARTING', 'SCAN_QR_CODE']:
-            self.status = 'connecting'
-        else:
-            self.status = 'disconnected'
+            # Map WAHA status to model status
+            waha_status = status_data.get('status', 'DISCONNECTED')
+            if waha_status in ['WORKING', 'CONNECTED']:
+                self.status = 'connected'
+                self.qr_code = False  # Clear QR when connected
+                # Try to get phone number
+                if 'me' in status_data:
+                    self.phone_uid = status_data['me'].get('id', '')
+            elif waha_status in ['STARTING', 'SCAN_QR_CODE']:
+                self.status = 'connecting'
+            else:
+                self.status = 'disconnected'
 
-        self.message_post(body=_('Status updated: %s', self.status))
-        
-        return {
-            'type': 'ir.actions.client',
-            'tag': 'display_notification',
-            'params': {
-                'title': _('Status Updated'),
-                'message': _('Current status: %s', self.status),
-                'type': 'success',
-                'sticky': False,
+            self.message_post(body=_('Status updated: %s', self.status))
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _('Status Updated'),
+                    'message': _('Current status: %s', self.status),
+                    'type': 'success',
+                    'sticky': False,
+                }
             }
-        }
+        except requests.exceptions.ConnectionError:
+            self.status = 'error'
+            raise UserError(_("Cannot connect to WAHA server at %s") % self.waha_url)
+        except Exception as e:
+            self.status = 'error'
+            raise UserError(_("Error refreshing status: %s") % str(e))
 
     def action_disconnect(self):
         """Disconnect WAHA session"""
         self.ensure_one()
-        api = WahaApi(self)
-        api.stop_session()
-        self.write({
-            'status': 'disconnected',
-            'qr_code': False,
-        })
-        self.message_post(body=_('Session disconnected'))
-        
-        return {
-            'type': 'ir.actions.client',
-            'tag': 'display_notification',
-            'params': {
-                'title': _('Disconnected'),
-                'message': _('WhatsApp session has been disconnected'),
-                'type': 'warning',
+        try:
+            api = WahaApi(self)
+            api.stop_session()
+            self.write({
+                'status': 'disconnected',
+                'qr_code': False,
+            })
+            self.message_post(body=_('Session disconnected'))
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _('Disconnected'),
+                    'message': _('WhatsApp session has been disconnected'),
+                    'type': 'warning',
+                }
             }
-        }
+        except requests.exceptions.ConnectionError:
+            raise UserError(_("Cannot connect to WAHA server at %s") % self.waha_url)
+        except Exception as e:
+            raise UserError(_("Error disconnecting: %s") % str(e))
 
     def button_sync_waha_templates(self):
         """
