@@ -140,19 +140,28 @@ class WahaWebhookController(http.Controller):
                 _logger.info('Created new partner for phone: %s', from_number)
             
             # Find or create discuss channel for this chat
+            # Get the admin user to add to the channel
+            admin_user = request.env.ref('base.user_admin')
+            
             channel = request.env['discuss.channel'].sudo().search([
                 ('channel_partner_ids', 'in', [partner.id]),
                 ('channel_type', '=', 'chat')
             ], limit=1)
             
             if not channel:
-                # Create new chat channel
+                # Create new chat channel with admin and partner
                 channel = request.env['discuss.channel'].sudo().create({
                     'name': f'WhatsApp: {partner.name}',
                     'channel_type': 'chat',
-                    'channel_partner_ids': [(4, partner.id)],
+                    'channel_partner_ids': [(4, partner.id), (4, admin_user.partner_id.id)],
                 })
                 _logger.info('Created new chat channel for partner: %s', partner.name)
+            else:
+                # Ensure admin is in the channel
+                if admin_user.partner_id.id not in channel.channel_partner_ids.ids:
+                    channel.write({
+                        'channel_partner_ids': [(4, admin_user.partner_id.id)]
+                    })
             
             # Post message to the channel
             mail_message = channel.message_post(
