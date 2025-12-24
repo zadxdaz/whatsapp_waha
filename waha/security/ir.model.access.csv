@@ -10,4 +10,3 @@ access_waha_template_button_admin,waha.template.button.admin,model_waha_template
 access_waha_template_variable_user,waha.template.variable.user,model_waha_template_variable,group_waha_user,1,0,0,0
 access_waha_template_variable_admin,waha.template.variable.admin,model_waha_template_variable,group_waha_admin,1,1,1,1
 access_waha_composer_user,waha.composer.user,model_waha_composer,group_waha_user,1,1,1,1
-access_waha_preview_user,waha.preview.user,model_waha_preview,group_waha_user,1,1,1,1
