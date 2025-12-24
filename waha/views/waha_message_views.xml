@@ -9,9 +9,9 @@
                 <header>
                     <button name="action_send" string="Send" type="object"
                             class="oe_highlight"
-                            attrs="{'invisible': [('state', '!=', 'outgoing')]}"/>
+                            invisible="state != 'outgoing'"/>
                     <button name="action_retry" string="Retry" type="object"
-                            attrs="{'invisible': [('state', 'not in', ['error', 'bounced'])]}"/>
+                            invisible="state not in ['error', 'bounced']"/>
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>
@@ -33,7 +33,7 @@
                         <field name="body" nolabel="1"/>
                     </group>
 
-                    <group attrs="{'invisible': [('state', 'not in', ['error', 'bounced'])]}">
+                    <group invisible="state not in ['error', 'bounced']">
                         <group string="Failure Information">
                             <field name="failure_type"/>
                             <field name="failure_reason"/>
