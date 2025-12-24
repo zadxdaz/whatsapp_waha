@@ -183,7 +183,24 @@ class WahaAccount(models.Model):
             return self.action_get_qr()
         except WahaError as err:
             self.write({'status': 'error'})
-            raise UserError(str(err)) from err
+            error_message = str(err)
+            if "Cannot connect to WAHA server" in error_message:
+                raise UserError(_(
+                    "Cannot connect to WAHA server at %s\n\n"
+                    "Please verify:\n"
+                    "• WAHA server is running\n"
+                    "• The URL is correct\n"
+                    "• No firewall is blocking the connection\n\n"
+                    "Original error: %s"
+                ) % (self.waha_url, error_message)) from err
+            elif "timeout" in error_message.lower():
+                raise UserError(_(
+                    "WAHA server timeout at %s\n\n"
+                    "The server is not responding. Please check if WAHA is running properly.\n\n"
+                    "Original error: %s"
+                ) % (self.waha_url, error_message)) from err
+            else:
+                raise UserError(_("WAHA Error: %s") % error_message) from err
 
     def action_get_qr(self):
         """Get QR code for scanning"""
@@ -209,7 +226,14 @@ class WahaAccount(models.Model):
                 'target': 'current',
             }
         except WahaError as err:
-            raise UserError(str(err)) from err
+            error_message = str(err)
+            if "Cannot connect to WAHA server" in error_message:
+                raise UserError(_(
+                    "Cannot connect to WAHA server at %s\n\n"
+                    "Please check if WAHA is running and accessible."
+                ) % self.waha_url) from err
+            else:
+                raise UserError(_("Failed to get QR code: %s") % error_message) from err
 
     def action_refresh_status(self):
         """Refresh connection status from WAHA"""
@@ -245,7 +269,14 @@ class WahaAccount(models.Model):
             }
         except WahaError as err:
             self.status = 'error'
-            raise UserError(str(err)) from err
+            error_message = str(err)
+            if "Cannot connect to WAHA server" in error_message:
+                raise UserError(_(
+                    "Cannot connect to WAHA server at %s\n\n"
+                    "Failed to refresh status. Please verify WAHA is running."
+                ) % self.waha_url) from err
+            else:
+                raise UserError(_("Failed to refresh status: %s") % error_message) from err
 
     def action_disconnect(self):
         """Disconnect WAHA session"""
@@ -269,7 +300,14 @@ class WahaAccount(models.Model):
                 }
             }
         except WahaError as err:
-            raise UserError(str(err)) from err
+            error_message = str(err)
+            if "Cannot connect to WAHA server" in error_message:
+                raise UserError(_(
+                    "Cannot disconnect - WAHA server at %s is not responding\n\n"
+                    "The session may already be disconnected or WAHA is not running."
+                ) % self.waha_url) from err
+            else:
+                raise UserError(_("Failed to disconnect: %s") % error_message) from err
 
     def button_sync_waha_templates(self):
         """
@@ -351,7 +389,14 @@ class WahaAccount(models.Model):
 
         except WahaError as err:
             _logger.error('Error sending WAHA message: %s', str(err))
-            raise UserError(str(err)) from err
+            error_message = str(err)
+            if "Cannot connect to WAHA server" in error_message:
+                raise UserError(_(
+                    "Cannot send message - WAHA server at %s is not responding\n\n"
+                    "Please verify WAHA is running before sending messages."
+                ) % self.waha_url) from err
+            else:
+                raise UserError(_("Failed to send WhatsApp message: %s") % error_message) from err
 
     # ============================================================
     # CRON AND MAINTENANCE
