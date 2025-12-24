@@ -7,7 +7,6 @@ from odoo import models, fields, api, _
 from odoo.addons.phone_validation.tools import phone_validation
 from odoo.addons.waha.tools import phone_validation as wa_phone_validation
 from odoo.addons.waha.tools.waha_api import WahaApi
-from odoo.addons.waha.tools.waha_exception import WahaError
 from odoo.exceptions import ValidationError, UserError
 
 _logger = logging.getLogger(__name__)
@@ -184,7 +183,7 @@ class WahaMessage(models.Model):
             
             return True
             
-        except WahaError as err:
+        except UserError as err:
             _logger.error('Error sending WAHA message %s: %s', self.id, str(err))
             self.write({
                 'state': 'error',

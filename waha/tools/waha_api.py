@@ -4,18 +4,25 @@ import logging
 import requests
 import base64
 import json
+from odoo.exceptions import UserError
+from odoo import _
 
 _logger = logging.getLogger(__name__)
 
 
-class WahaError(Exception):
-    """Custom exception for WAHA API errors"""
-    
-    def __init__(self, message, error_code=None, error_data=None):
-        self.message = message
-        self.error_code = error_code
-        self.error_data = error_data
-        super().__init__(self.message)
+class WahaConnectionError(UserError):
+    """Error when cannot connect to WAHA server"""
+    pass
+
+
+class WahaTimeoutError(UserError):
+    """Error when WAHA server times out"""
+    pass
+
+
+class WahaAPIError(UserError):
+    """General WAHA API error"""
+    pass
 
 
 class WahaApi:
@@ -55,7 +62,9 @@ class WahaApi:
             dict: Response data
             
         Raises:
-            WahaError: If request fails
+            WahaConnectionError: If cannot connect to server
+            WahaTimeoutError: If request times out
+            WahaAPIError: For other API errors
         """
         url = f"{self.base_url}{endpoint}"
         
@@ -91,19 +100,28 @@ class WahaApi:
                 error_msg = e.response.text or error_msg
             
             _logger.error('WAHA API Error: %s %s - %s', method, url, error_msg)
-            raise WahaError(f"WAHA API Error: {error_msg}", error_code=e.response.status_code) from e
+            raise WahaAPIError(_("WAHA API Error: %s") % error_msg) from e
             
         except requests.exceptions.Timeout as e:
             _logger.error('WAHA API Timeout: %s %s', method, url)
-            raise WahaError("Request timeout. WAHA server not responding.") from e
+            raise WahaTimeoutError(_(
+                "WAHA server timeout at %s\n\n"
+                "The server is not responding. Please check if WAHA is running properly."
+            ) % self.base_url) from e
             
         except requests.exceptions.ConnectionError as e:
             _logger.error('WAHA API Connection Error: %s %s', method, url)
-            raise WahaError("Cannot connect to WAHA server. Check if WAHA is running.") from e
+            raise WahaConnectionError(_(
+                "Cannot connect to WAHA server at %s\n\n"
+                "Please verify:\n"
+                "• WAHA server is running\n"
+                "• The URL is correct\n"
+                "• No firewall is blocking the connection"
+            ) % self.base_url) from e
             
         except Exception as e:
             _logger.error('WAHA API Unexpected Error: %s', str(e))
-            raise WahaError(f"Unexpected error: {str(e)}") from e
+            raise WahaAPIError(_("Unexpected error: %s") % str(e)) from e
 
     # ============================================================
     # SESSION MANAGEMENT
