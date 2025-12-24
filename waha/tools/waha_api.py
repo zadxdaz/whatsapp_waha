@@ -99,7 +99,15 @@ class WahaApi:
     def start_session(self):
         """Start a new WAHA session"""
         return self._make_request('POST', '/api/sessions', data={
-            'name': self.session_name
+            'name': self.session_name,
+            'config': {
+                'proxy': None,
+                'noweb': {
+                    'store': {
+                        'enabled': True,
+                    }
+                }
+            }
         })
 
     def get_session_status(self):
