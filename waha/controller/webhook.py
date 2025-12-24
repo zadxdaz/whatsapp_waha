@@ -9,7 +9,7 @@ _logger = logging.getLogger(__name__)
 
 class WahaWebhookController(http.Controller):
     
-    @http.route('/waha/webhook', type='json', auth='public', methods=['POST'], csrf=False)
+    @http.route('/waha/webhook', type='http', auth='public', methods=['POST'], csrf=False)
     def waha_webhook(self, **kwargs):
         """
         Webhook endpoint for WAHA events
@@ -20,14 +20,17 @@ class WahaWebhookController(http.Controller):
         - session.status: Session status change
         """
         try:
-            data = request.jsonrequest
+            data = json.loads(request.httprequest.data.decode('utf-8'))
             _logger.info('WAHA Webhook received: %s', json.dumps(data, indent=2))
             
             # Verify webhook token
             verify_token = request.httprequest.headers.get('X-Webhook-Token')
             if not self._verify_token(verify_token):
                 _logger.warning('Invalid webhook token')
-                return {'status': 'error', 'message': 'Invalid token'}
+                return request.make_response(
+                    json.dumps({'status': 'error', 'message': 'Invalid token'}),
+                    headers=[('Content-Type', 'application/json')]
+                )
             
             # Process based on event type
             event = data.get('event')
@@ -41,11 +44,17 @@ class WahaWebhookController(http.Controller):
             else:
                 _logger.info('Unhandled event type: %s', event)
             
-            return {'status': 'ok'}
+            return request.make_response(
+                json.dumps({'status': 'ok'}),
+                headers=[('Content-Type', 'application/json')]
+            )
             
         except Exception as e:
             _logger.exception('Error processing WAHA webhook: %s', str(e))
-            return {'status': 'error', 'message': str(e)}
+            return request.make_response(
+                json.dumps({'status': 'error', 'message': str(e)}),
+                headers=[('Content-Type', 'application/json')]
+            )
     
     def _verify_token(self, token):
         """Verify webhook token matches any account's verify token"""

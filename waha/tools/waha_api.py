@@ -153,8 +153,7 @@ class WahaApi:
             chat_id: WhatsApp chat ID (e.g., "1234567890@c.us")
             text: Message text
         """
-        return self._make_request('POST', '/api/sendText', data={
-            'session': self.session_name,
+        return self._make_request('POST', f'/api/{self.session_name}/sendText', data={
             'chatId': chat_id,
             'text': text
         })
@@ -169,7 +168,6 @@ class WahaApi:
             caption: Optional caption
         """
         data = {
-            'session': self.session_name,
             'chatId': chat_id,
             'file': {
                 'mimetype': 'image/jpeg',
@@ -179,7 +177,7 @@ class WahaApi:
         if caption:
             data['caption'] = caption
         
-        return self._make_request('POST', '/api/sendImage', data=data)
+        return self._make_request('POST', f'/api/{self.session_name}/sendImage', data=data)
 
     def send_file(self, chat_id, file_data, filename, mimetype):
         """
@@ -191,8 +189,7 @@ class WahaApi:
             filename: File name
             mimetype: MIME type
         """
-        return self._make_request('POST', '/api/sendFile', data={
-            'session': self.session_name,
+        return self._make_request('POST', f'/api/{self.session_name}/sendFile', data={
             'chatId': chat_id,
             'file': {
                 'filename': filename,
@@ -204,7 +201,6 @@ class WahaApi:
     def send_video(self, chat_id, video_data, caption=None):
         """Send video message"""
         data = {
-            'session': self.session_name,
             'chatId': chat_id,
             'file': {
                 'mimetype': 'video/mp4',
@@ -214,12 +210,11 @@ class WahaApi:
         if caption:
             data['caption'] = caption
         
-        return self._make_request('POST', '/api/sendVideo', data=data)
+        return self._make_request('POST', f'/api/{self.session_name}/sendVideo', data=data)
 
     def send_audio(self, chat_id, audio_data):
         """Send audio message"""
-        return self._make_request('POST', '/api/sendAudio', data={
-            'session': self.session_name,
+        return self._make_request('POST', f'/api/{self.session_name}/sendAudio', data={
             'chatId': chat_id,
             'file': {
                 'mimetype': 'audio/ogg',
@@ -230,7 +225,6 @@ class WahaApi:
     def send_location(self, chat_id, latitude, longitude, title=None):
         """Send location message"""
         data = {
-            'session': self.session_name,
             'chatId': chat_id,
             'latitude': latitude,
             'longitude': longitude
@@ -238,7 +232,7 @@ class WahaApi:
         if title:
             data['title'] = title
         
-        return self._make_request('POST', '/api/sendLocation', data=data)
+        return self._make_request('POST', f'/api/{self.session_name}/sendLocation', data=data)
 
     # ============================================================
     # WEBHOOK MANAGEMENT
