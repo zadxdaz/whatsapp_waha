@@ -127,17 +127,25 @@ class WahaWebhookController(http.Controller):
             
             message = request.env['waha.message'].sudo().create(message_vals)
             
-            # Find partner by phone number
+            # Find or create partner by phone number
             partner = self._find_partner_by_phone(from_number)
             
-            # Post to chatter if partner found
-            if partner:
-                partner.sudo().message_post(
-                    body=f'<p><strong>WhatsApp Message:</strong></p>{body}',
-                    message_type='comment',
-                    subtype_xmlid='mail.mt_comment',
-                )
-                message.mail_message_id = partner.message_ids[0].id
+            if not partner:
+                # Create new partner if not found
+                partner = request.env['res.partner'].sudo().create({
+                    'name': from_number,
+                    'mobile': f'+{from_number}',
+                    'phone': f'+{from_number}',
+                })
+                _logger.info('Created new partner for phone: %s', from_number)
+            
+            # Post to chatter
+            partner.sudo().message_post(
+                body=f'<p><strong>WhatsApp Message:</strong></p><p>{body}</p>',
+                message_type='comment',
+                subtype_xmlid='mail.mt_comment',
+            )
+            message.mail_message_id = partner.message_ids[0].id
             
             _logger.info('Incoming message processed: %s', msg_uid)
             
