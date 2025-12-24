@@ -23,10 +23,25 @@ class WahaWebhookController(http.Controller):
             data = json.loads(request.httprequest.data.decode('utf-8'))
             _logger.info('WAHA Webhook received: %s', json.dumps(data, indent=2))
             
-            # Verify webhook token
+            # Verify webhook token (optional - only if configured in account)
             verify_token = request.httprequest.headers.get('X-Webhook-Token')
-            if not self._verify_token(verify_token):
-                _logger.warning('Invalid webhook token')
+            session_name = data.get('session')
+            
+            # Find account by session name
+            account = request.env['waha.account'].sudo().search([
+                ('session_name', '=', session_name)
+            ], limit=1)
+            
+            if not account:
+                _logger.warning('No account found for session: %s', session_name)
+                return request.make_response(
+                    json.dumps({'status': 'error', 'message': 'Session not found'}),
+                    headers=[('Content-Type', 'application/json')]
+                )
+            
+            # Only verify token if account has one configured
+            if account.webhook_verify_token and verify_token != account.webhook_verify_token:
+                _logger.warning('Invalid webhook token for session: %s', session_name)
                 return request.make_response(
                     json.dumps({'status': 'error', 'message': 'Invalid token'}),
                     headers=[('Content-Type', 'application/json')]
@@ -56,17 +71,6 @@ class WahaWebhookController(http.Controller):
                 headers=[('Content-Type', 'application/json')]
             )
     
-    def _verify_token(self, token):
-        """Verify webhook token matches any account's verify token"""
-        if not token:
-            return False
-        
-        account = request.env['waha.account'].sudo().search([
-            ('webhook_verify_token', '=', token)
-        ], limit=1)
-        
-        return bool(account)
-    
     def _handle_incoming_message(self, data):
         """
         Handle incoming message webhook
@@ -87,17 +91,13 @@ class WahaWebhookController(http.Controller):
         }
         """
         try:
-            session_name = data.get('session')
             payload = data.get('payload', {})
             
-            # Find account by session name
+            # account was already found and validated in main webhook handler
+            session_name = data.get('session')
             account = request.env['waha.account'].sudo().search([
                 ('session_name', '=', session_name)
             ], limit=1)
-            
-            if not account:
-                _logger.warning('No account found for session: %s', session_name)
-                return
             
             # Extract message data
             msg_uid = payload.get('id')
