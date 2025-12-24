@@ -42,7 +42,7 @@
 
                     <group string="Technical Information" groups="base.group_no_one">
                         <field name="mail_message_id"/>
-                        <field name="free_text_json" widget="ace" options="{'mode': 'json'}"/>
+                        <field name="free_text_json" widget="ace"/>
                     </group>
                 </sheet>
             </form>
