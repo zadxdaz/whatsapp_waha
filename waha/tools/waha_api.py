@@ -98,17 +98,30 @@ class WahaApi:
 
     def start_session(self):
         """Start a new WAHA session"""
-        return self._make_request('POST', '/api/sessions', data={
-            'name': self.session_name,
-            'config': {
-                'proxy': None,
-                'noweb': {
-                    'store': {
-                        'enabled': True,
+        # First, try to get existing session
+        try:
+            session_info = self._make_request('GET', f'/api/sessions/{self.session_name}')
+            # Session exists, start it if stopped
+            if session_info.get('status') in ['STOPPED', 'FAILED']:
+                return self._make_request('POST', f'/api/sessions/{self.session_name}/start')
+            # Session already running or starting
+            return session_info
+        except requests.exceptions.HTTPError as e:
+            # Session doesn't exist (404), create it
+            if e.response.status_code == 404:
+                return self._make_request('POST', '/api/sessions', data={
+                    'name': self.session_name,
+                    'config': {
+                        'proxy': None,
+                        'noweb': {
+                            'store': {
+                                'enabled': True,
+                            }
+                        }
                     }
-                }
-            }
-        })
+                })
+            # Other error, re-raise
+            raise
 
     def get_session_status(self):
         """Get session status"""
