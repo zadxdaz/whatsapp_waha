@@ -140,8 +140,8 @@ class WahaWebhookController(http.Controller):
                 _logger.info('Created new partner for phone: %s', from_number)
             
             # Find or create discuss channel for this chat
-            # Get the admin user to add to the channel
-            admin_user = request.env.ref('base.user_admin')
+            # Get the admin user to add to the channel (use sudo to avoid access error)
+            admin_user = request.env.ref('base.user_admin').sudo()
             
             channel = request.env['discuss.channel'].sudo().search([
                 ('channel_partner_ids', 'in', [partner.id]),
