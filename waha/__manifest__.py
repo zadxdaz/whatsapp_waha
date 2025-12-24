@@ -31,17 +31,11 @@
         
         # Wizard
         'wizard/waha_composer_views.xml',
-        'wizard/waha_preview_views.xml',
         
         # Views
         'views/waha_account_views.xml',
         'views/waha_message_views.xml',
         'views/waha_template_views.xml',
-        'views/waha_template_button_views.xml',
-        'views/waha_template_variable_views.xml',
-        'views/discuss_channel_views.xml',
-        'views/ir_actions_server_views.xml',
-        'views/res_config_settings_views.xml',
         'views/res_partner_views.xml',
         'views/waha_menus.xml',
     ],
