@@ -149,17 +149,17 @@ class WahaWebhookController(http.Controller):
                 ('channel_type', '=', 'channel')
             ], limit=1)
 
-            required_partner_ids = set([partner.id, admin_user.partner_id.id])
+            required_partner_ids = [partner.id, admin_user.partner_id.id]
             if channel:
                 # Ensure all required partners are in the channel
-                missing_ids = required_partner_ids - set(channel.channel_partner_ids.ids)
+                missing_ids = set(required_partner_ids) - set(channel.channel_partner_ids.ids)
                 if missing_ids:
                     channel.write({'channel_partner_ids': [(4, pid) for pid in missing_ids]})
             else:
                 channel = request.env['discuss.channel'].sudo().create({
                     'name': f'WhatsApp: {partner.name}',
                     'channel_type': 'channel',
-                    'channel_partner_ids': [(6, 0, list(required_partner_ids))],
+                    'channel_partner_ids': [(6, 0, required_partner_ids)],
                 })
                 _logger.info('Created new group channel for partner: %s', partner.name)
             
