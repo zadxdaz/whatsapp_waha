@@ -87,7 +87,8 @@ class WahaMessage(models.Model):
     )
     
     mail_message_id = fields.Many2one('mail.message', string="Mail Message", index=True)
-    body = fields.Html(related='mail_message_id.body', string="Body", related_sudo=False)
+    body = fields.Html(string="Message Body")
+    body_html = fields.Html(related='mail_message_id.body', string="Mail Body", related_sudo=False)
 
     _sql_constraints = [
         ('unique_msg_uid', 'unique(msg_uid)',
