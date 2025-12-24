@@ -103,7 +103,7 @@ class ResPartner(models.Model):
             'name': _('WhatsApp Messages'),
             'type': 'ir.actions.act_window',
             'res_model': 'waha.message',
-            'view_mode': 'tree,form',
+            'view_mode': 'list,form',
             'domain': [('mobile_number', 'in', numbers)],
             'context': {'default_mobile_number': self.mobile or self.phone}
         }

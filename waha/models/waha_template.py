@@ -138,7 +138,7 @@ class WahaTemplate(models.Model):
             'name': _('Messages'),
             'type': 'ir.actions.act_window',
             'res_model': 'waha.message',
-            'view_mode': 'tree,form',
+            'view_mode': 'list,form',
             'domain': [('wa_template_id', '=', self.id)],
             'context': {'default_wa_template_id': self.id}
         }

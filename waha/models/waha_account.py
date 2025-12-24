@@ -163,7 +163,7 @@ class WahaAccount(models.Model):
             'name': _('Templates'),
             'type': 'ir.actions.act_window',
             'res_model': 'waha.template',
-            'view_mode': 'tree,form',
+            'view_mode': 'list,form',
             'domain': [('wa_account_id', '=', self.id)],
             'context': {'default_wa_account_id': self.id}
         }
