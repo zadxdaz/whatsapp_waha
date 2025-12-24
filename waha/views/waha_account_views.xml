@@ -21,7 +21,7 @@
                 </header>
                 <sheet>
                     <div class="oe_button_box" name="button_box">
-                        <button name="%(action_waha_template)d" type="action"
+                        <button name="action_view_templates" type="object"
                                 class="oe_stat_button" icon="fa-commenting">
                             <field name="templates_count" widget="statbutton" string="Templates"/>
                         </button>

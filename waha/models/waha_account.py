@@ -156,6 +156,18 @@ class WahaAccount(models.Model):
             if len(account.notify_user_ids) < 1:
                 raise ValidationError(_("At least one user to notify is required"))
 
+    def action_view_templates(self):
+        """View templates for this account"""
+        self.ensure_one()
+        return {
+            'name': _('Templates'),
+            'type': 'ir.actions.act_window',
+            'res_model': 'waha.template',
+            'view_mode': 'tree,form',
+            'domain': [('wa_account_id', '=', self.id)],
+            'context': {'default_wa_account_id': self.id}
+        }
+
     # ============================================================
     # CONNECTION AND SESSION MANAGEMENT
     # ============================================================
