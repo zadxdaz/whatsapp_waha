@@ -205,16 +205,36 @@ class WahaAccount(models.Model):
         self.ensure_one()
         try:
             api = WahaApi(self)
-            qr_data = api.get_qr_code()
+            
+            # First check session status
+            status_data = api.get_session_status()
+            session_status = status_data.get('status', '')
+            
+            # Only try to get QR if session is in SCAN_QR_CODE state
+            if session_status == 'SCAN_QR_CODE':
+                qr_data = api.get_qr_code()
 
-            if qr_data.get('qr'):
-                # Store QR code as base64
-                import base64
-                qr_base64 = qr_data['qr']
-                if ',' in qr_base64:
-                    qr_base64 = qr_base64.split(',')[1]
-                self.qr_code = qr_base64
-                self.qr_code_expiry = fields.Datetime.now() + timedelta(minutes=2)
+                if qr_data.get('qr'):
+                    # Store QR code as base64
+                    import base64
+                    qr_base64 = qr_data['qr']
+                    if ',' in qr_base64:
+                        qr_base64 = qr_base64.split(',')[1]
+                    self.qr_code = qr_base64
+                    self.qr_code_expiry = fields.Datetime.now() + timedelta(minutes=2)
+            elif session_status in ['WORKING', 'CONNECTED']:
+                # Already connected
+                self.status = 'connected'
+                self.qr_code = False
+                if 'me' in status_data:
+                    self.phone_uid = status_data['me'].get('id', '')
+                raise UserError(_("Session is already connected!"))
+            else:
+                # Session is starting, ask user to wait
+                raise UserError(_(
+                    "Session is starting (status: %s)\n\n"
+                    "Please wait a moment and click 'Get QR Code' again."
+                ) % session_status)
 
             return {
                 'type': 'ir.actions.act_window',
@@ -225,6 +245,8 @@ class WahaAccount(models.Model):
             }
         except requests.exceptions.ConnectionError:
             raise UserError(_("Cannot connect to WAHA server at %s") % self.waha_url)
+        except UserError:
+            raise
         except Exception as e:
             raise UserError(_("Error getting QR code: %s") % str(e))
 
