@@ -139,13 +139,29 @@ class WahaWebhookController(http.Controller):
                 })
                 _logger.info('Created new partner for phone: %s', from_number)
             
-            # Post to chatter
-            partner.sudo().message_post(
-                body=f'<p><strong>WhatsApp Message:</strong></p><p>{body}</p>',
+            # Find or create discuss channel for this chat
+            channel = request.env['discuss.channel'].sudo().search([
+                ('channel_partner_ids', 'in', [partner.id]),
+                ('channel_type', '=', 'chat')
+            ], limit=1)
+            
+            if not channel:
+                # Create new chat channel
+                channel = request.env['discuss.channel'].sudo().create({
+                    'name': f'WhatsApp: {partner.name}',
+                    'channel_type': 'chat',
+                    'channel_partner_ids': [(4, partner.id)],
+                })
+                _logger.info('Created new chat channel for partner: %s', partner.name)
+            
+            # Post message to the channel
+            mail_message = channel.message_post(
+                body=f'<p>{body}</p>',
                 message_type='comment',
                 subtype_xmlid='mail.mt_comment',
+                author_id=partner.id,
             )
-            message.mail_message_id = partner.message_ids[0].id
+            message.mail_message_id = mail_message.id
             
             _logger.info('Incoming message processed: %s', msg_uid)
             
