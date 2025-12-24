@@ -9,9 +9,9 @@
                 <header>
                     <button name="action_approve" string="Approve" type="object"
                             class="oe_highlight"
-                            attrs="{'invisible': [('status', '=', 'approved')]}"/>
+                            invisible="status == 'approved'"/>
                     <button name="action_reset_to_draft" string="Reset to Draft" type="object"
-                            attrs="{'invisible': [('status', '=', 'draft')]}"/>
+                            invisible="status == 'draft'"/>
                     <field name="status" widget="statusbar"/>
                 </header>
                 <sheet>
@@ -40,11 +40,11 @@
                             <group string="Header">
                                 <field name="header_type"/>
                                 <field name="header_text" 
-                                       attrs="{'invisible': [('header_type', '!=', 'text')],
-                                               'required': [('header_type', '=', 'text')]}"/>
+                                       invisible="header_type != 'text'"
+                                       required="header_type == 'text'"/>
                                 <field name="header_attachment_id"
-                                       attrs="{'invisible': [('header_type', 'not in', ['image', 'video', 'document'])],
-                                               'required': [('header_type', 'in', ['image', 'video', 'document'])]}"/>
+                                       invisible="header_type not in ['image', 'video', 'document']"
+                                       required="header_type in ['image', 'video', 'document']"/>
                             </group>
 
                             <group string="Body">
@@ -75,10 +75,10 @@
                                     <field name="sequence" widget="handle"/>
                                     <field name="button_type"/>
                                     <field name="name"/>
-                                    <field name="url" attrs="{'invisible': [('button_type', '!=', 'url')]}"/>
-                                    <field name="url_type" attrs="{'invisible': [('button_type', '!=', 'url')]}"/>
-                                    <field name="phone_number" attrs="{'invisible': [('button_type', '!=', 'phone')]}"/>
-                                    <field name="payload" attrs="{'invisible': [('button_type', '!=', 'quick_reply')]}"/>
+                                    <field name="url" invisible="button_type != 'url'"/>
+                                    <field name="url_type" invisible="button_type != 'url'"/>
+                                    <field name="phone_number" invisible="button_type != 'phone'"/>
+                                    <field name="payload" invisible="button_type != 'quick_reply'"/>
                                 </tree>
                             </field>
                         </page>

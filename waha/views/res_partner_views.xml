@@ -10,12 +10,12 @@
             <xpath expr="//div[@name='button_box']" position="inside">
                 <button name="action_view_whatsapp_messages" type="object"
                         class="oe_stat_button" icon="fa-whatsapp"
-                        attrs="{'invisible': [('waha_messages_count', '=', 0)]}">
+                        invisible="waha_messages_count == 0">
                     <field name="waha_messages_count" widget="statbutton" string="WhatsApp"/>
                 </button>
                 <button name="action_send_whatsapp_message" type="object"
                         class="oe_stat_button" icon="fa-whatsapp"
-                        attrs="{'invisible': ['|', ('mobile', '=', False), ('phone', '=', False)]}">
+                        invisible="not mobile and not phone">
                     <span>Send WhatsApp</span>
                 </button>
             </xpath>
@@ -23,7 +23,7 @@
             <!-- Add WhatsApp account field -->
             <xpath expr="//field[@name='user_id']" position="after">
                 <field name="wa_account_id" 
-                       attrs="{'invisible': ['|', ('mobile', '=', False), ('phone', '=', False)]}"/>
+                       invisible="not mobile and not phone"/>
             </xpath>
         </field>
     </record>

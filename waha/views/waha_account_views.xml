@@ -9,13 +9,13 @@
                 <header>
                     <button name="action_connect" string="Connect" type="object" 
                             class="oe_highlight"
-                            attrs="{'invisible': [('status', '!=', 'disconnected')]}"/>
+                            invisible="status != 'disconnected'"/>
                     <button name="action_get_qr" string="Get QR Code" type="object"
                             class="oe_highlight"
-                            attrs="{'invisible': [('status', 'not in', ['connecting', 'connected'])]}"/>
+                            invisible="status not in ['connecting', 'connected']"/>
                     <button name="action_refresh_status" string="Refresh Status" type="object"/>
                     <button name="action_disconnect" string="Disconnect" type="object"
-                            attrs="{'invisible': [('status', 'not in', ['connected', 'connecting'])]}"/>
+                            invisible="status not in ['connected', 'connecting']"/>
                     <field name="status" widget="statusbar"
                            statusbar_visible="disconnected,connecting,connected"/>
                 </header>
@@ -28,7 +28,7 @@
                     </div>
                     
                     <!-- QR Code Display -->
-                    <div class="row" attrs="{'invisible': [('qr_code', '=', False)]}">
+                    <div class="row" invisible="not qr_code">
                         <div class="col-md-12 text-center">
                             <field name="qr_code" widget="image" class="mb-3"/>
                             <div class="alert alert-info">

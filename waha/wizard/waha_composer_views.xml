@@ -16,8 +16,8 @@
                         <group>
                             <field name="use_template"/>
                             <field name="wa_template_id"
-                                   attrs="{'invisible': [('use_template', '=', False)],
-                                           'required': [('use_template', '=', True)]}"/>
+                                   invisible="not use_template"
+                                   required="use_template"/>
                             <field name="res_model" invisible="1"/>
                             <field name="res_id" invisible="1"/>
                         </group>
@@ -28,7 +28,7 @@
                             <group>
                                 <field name="body" nolabel="1" widget="html"
                                        placeholder="Type your WhatsApp message here..."
-                                       attrs="{'readonly': [('use_template', '=', True)]}"/>
+                                       readonly="use_template"/>
                             </group>
                         </page>
 
