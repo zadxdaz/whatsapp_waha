@@ -18,6 +18,12 @@
                         invisible="not mobile and not phone">
                     <span>Send WhatsApp</span>
                 </button>
+                <button name="action_get_whatsapp_info" type="object"
+                        class="oe_stat_button" icon="fa-info-circle"
+                        invisible="not mobile and not phone"
+                        title="Get WhatsApp contact info from WAHA API (debugging)">
+                    <span>WhatsApp Info</span>
+                </button>
             </xpath>
 
             <!-- Add WhatsApp account field -->

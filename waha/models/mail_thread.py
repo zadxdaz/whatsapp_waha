@@ -1,9 +1,82 @@
 # -*- coding: utf-8 -*-
+import logging
 from odoo import api, models, _
+
+_logger = logging.getLogger(__name__)
 
 
 class MailThread(models.AbstractModel):
     _inherit = 'mail.thread'
+
+    def message_post(self, **kwargs):
+        """Override message_post to capture WhatsApp channel messages"""
+        result = super().message_post(**kwargs)
+        
+        # Skip WhatsApp processing if flag is set (prevent recursion)
+        if self.env.context.get('skip_whatsapp_send'):
+            return result
+        
+        # Check if this is a WhatsApp channel
+        if self._name == 'discuss.channel' and self.is_whatsapp:
+            _logger.info('=== WhatsApp message_post() STARTED ===')
+            _logger.info('Channel: %s (ID: %s)', self.name, self.id)
+            
+            try:
+                # Don't send if author is a contact (incoming message)
+                # Only send if author is a user (outgoing message)
+                author_id = kwargs.get('author_id')
+                current_user_partner = self.env.user.partner_id
+                
+                if author_id and author_id != current_user_partner.id:
+                    _logger.info('Skipping WhatsApp send for incoming message from contact %s', author_id)
+                    return result
+                
+                # Get account
+                wa_account = self.whatsapp_account_id
+                if not wa_account or wa_account.status != 'connected':
+                    _logger.warning('WhatsApp account not available or not connected')
+                    return result
+                
+                # Check if group (not supported yet)
+                if self.whatsapp_group_id:
+                    _logger.info('Group message - skipping (not yet implemented)')
+                    return result
+                
+                # Get partner (contact) from channel
+                admin_partner = self.env.ref('base.user_admin').sudo().partner_id
+                partner = self.env['res.partner'].search(
+                    [('id', 'in', self.channel_partner_ids.ids),
+                     ('id', '!=', admin_partner.id)],
+                    limit=1
+                )
+                
+                if not partner:
+                    _logger.warning('No partner found in channel %s', self.id)
+                    return result
+                
+                # Get message body
+                message_body = kwargs.get('body', '')
+                
+                # Delegate to waha.message.process_outbound_send
+                try:
+                    _logger.info('Delegating to waha.message.process_outbound_send')
+                    send_result = self.env['waha.message'].sudo().process_outbound_send(
+                        channel=self,
+                        partner=partner,
+                        text_body=message_body,
+                        reply_to_msg_uid=None
+                    )
+                    _logger.info('Message sent: %s', send_result.get('success'))
+                except Exception as e:
+                    _logger.warning('Error sending message: %s', str(e))
+                    # Don't fail the post, just warn
+                
+                _logger.info('=== WhatsApp message_post() COMPLETED ===')
+                    
+            except Exception as e:
+                _logger.exception('Error in WhatsApp message_post: %s', str(e))
+        
+        return result
 
     def _message_send_whatsapp(self, template_id=None, numbers=None):
         """

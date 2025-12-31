@@ -14,6 +14,9 @@
                             class="oe_highlight"
                             invisible="status not in ['connecting', 'connected']"/>
                     <button name="action_refresh_status" string="Refresh Status" type="object"/>
+                    <button name="action_fetch_chats_and_messages" string="📊 Load Chats" type="object"
+                            invisible="status not in ['connected', 'connecting']"
+                            title="Fetch last 10 chats with last 100 messages from each"/>
                     <button name="action_disconnect" string="Disconnect" type="object"
                             invisible="status not in ['connected', 'connecting']"/>
                     <field name="status" widget="statusbar"

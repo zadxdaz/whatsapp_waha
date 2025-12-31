@@ -73,106 +73,24 @@ class WahaWebhookController(http.Controller):
     
     def _handle_incoming_message(self, data):
         """
-        Handle incoming message webhook
-        
-        Example data:
-        {
-            "event": "message",
-            "session": "default",
-            "payload": {
-                "id": "true_1234567890@c.us_ABCDEF",
-                "timestamp": 1234567890,
-                "from": "1234567890@c.us",
-                "fromMe": false,
-                "body": "Hello!",
-                "hasMedia": false,
-                "ack": 0
-            }
-        }
+        Handle incoming message webhook - delegates to waha.message.process_inbound_webhook
         """
         try:
-            payload = data.get('payload', {})
-            
-            # account was already found and validated in main webhook handler
             session_name = data.get('session')
+            
+            # Find account
             account = request.env['waha.account'].sudo().search([
                 ('session_name', '=', session_name)
             ], limit=1)
             
-            # Extract message data
-            msg_uid = payload.get('id')
-            from_number = payload.get('from', '').replace('@c.us', '')
-            body = payload.get('body', '')
-            has_media = payload.get('hasMedia', False)
-            
-            # Check if message already exists
-            existing = request.env['waha.message'].sudo().search([
-                ('msg_uid', '=', msg_uid)
-            ], limit=1)
-            
-            if existing:
-                _logger.info('Message already exists: %s', msg_uid)
+            if not account:
+                _logger.warning('No account found for session: %s', session_name)
                 return
             
-            # Create incoming message
-            message_vals = {
-                'wa_account_id': account.id,
-                'msg_uid': msg_uid,
-                'mobile_number': from_number,
-                'body': body,
-                'message_type': 'inbound',
-                'state': 'received',
-                'free_text_json': json.dumps(payload),
-            }
+            # Delegate to waha.message.process_inbound_webhook
+            message = request.env['waha.message'].sudo().process_inbound_webhook(data, account)
             
-            message = request.env['waha.message'].sudo().create(message_vals)
-            
-            # Find or create partner by phone number
-            partner = self._find_partner_by_phone(from_number)
-            
-            if not partner:
-                # Create new partner if not found
-                partner = request.env['res.partner'].sudo().create({
-                    'name': from_number,
-                    'mobile': f'+{from_number}',
-                    'phone': f'+{from_number}',
-                })
-                _logger.info('Created new partner for phone: %s', from_number)
-            
-            # Find or create discuss channel for this chat
-            # Get the admin user to add to the channel (use sudo to avoid access error)
-            admin_user = request.env.ref('base.user_admin').sudo()
-            
-            # Always use a group channel (type 'channel') for WhatsApp
-            channel = request.env['discuss.channel'].sudo().search([
-                ('name', '=', f'WhatsApp: {partner.name}'),
-                ('channel_type', '=', 'channel')
-            ], limit=1)
-
-            required_partner_ids = [partner.id, admin_user.partner_id.id]
-            if channel:
-                # Ensure all required partners are in the channel
-                missing_ids = set(required_partner_ids) - set(channel.channel_partner_ids.ids)
-                if missing_ids:
-                    channel.write({'channel_partner_ids': [(4, pid) for pid in missing_ids]})
-            else:
-                channel = request.env['discuss.channel'].sudo().create({
-                    'name': f'WhatsApp: {partner.name}',
-                    'channel_type': 'channel',
-                    'channel_partner_ids': [(6, 0, required_partner_ids)],
-                })
-                _logger.info('Created new group channel for partner: %s', partner.name)
-            
-            # Post message to the channel
-            mail_message = channel.message_post(
-                body=f'<p>{body}</p>',
-                message_type='comment',
-                subtype_xmlid='mail.mt_comment',
-                author_id=partner.id,
-            )
-            message.mail_message_id = mail_message.id
-            
-            _logger.info('Incoming message processed: %s', msg_uid)
+            _logger.info('Incoming message processed: %s', message.id)
             
         except Exception as e:
             _logger.exception('Error handling incoming message: %s', str(e))
@@ -262,22 +180,3 @@ class WahaWebhookController(http.Controller):
             
         except Exception as e:
             _logger.exception('Error handling session status: %s', str(e))
-    
-    def _find_partner_by_phone(self, phone):
-        """Find partner by phone number"""
-        try:
-            # Try to find by mobile first
-            partner = request.env['res.partner'].sudo().search([
-                ('mobile', 'ilike', phone)
-            ], limit=1)
-            
-            if not partner:
-                # Try by phone
-                partner = request.env['res.partner'].sudo().search([
-                    ('phone', 'ilike', phone)
-                ], limit=1)
-            
-            return partner
-            
-        except Exception:
-            return None

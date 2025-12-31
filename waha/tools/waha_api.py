@@ -71,14 +71,21 @@ class WahaApi:
             
         except requests.exceptions.HTTPError as e:
             error_msg = f"HTTP {e.response.status_code}"
+            error_detail = ""
             try:
                 error_data = e.response.json()
                 error_msg = error_data.get('message', error_msg)
+                # WAHA error response might have error field
+                if 'error' in error_data:
+                    error_detail = str(error_data['error'])
             except:
                 error_msg = e.response.text or error_msg
             
-            _logger.error('WAHA API Error: %s %s - %s', method, url, error_msg)
-            raise
+            full_error = f"{error_msg}{' - ' + error_detail if error_detail else ''}"
+            _logger.error('WAHA API HTTP Error: %s %s - %s', method, url, full_error)
+            
+            # Re-raise with more context
+            raise Exception(full_error) from e
             
         except requests.exceptions.Timeout as e:
             _logger.error('WAHA API Timeout: %s %s - Server not responding', method, url)
@@ -145,19 +152,48 @@ class WahaApi:
     # MESSAGE SENDING
     # ============================================================
 
-    def send_text(self, chat_id, text):
+    def send_text(self, chat_id, text, reply_to=None):
         """
         Send text message
         
         Args:
             chat_id: WhatsApp chat ID (e.g., "1234567890@c.us")
-            text: Message text
+            text: Message text (max 4096 characters for WhatsApp)
+            reply_to: Optional message UID to reply to (helps establish context)
+            
+        Raises:
+            ValueError: If text is empty or too long
         """
-        return self._make_request('POST', f'/api/sendText', data={
+        if not text or not text.strip():
+            raise ValueError("Message text cannot be empty")
+        
+        if len(text) > 4096:
+            raise ValueError("Message text exceeds 4096 character limit")
+        
+        if not chat_id:
+            raise ValueError("Chat ID cannot be empty")
+        
+        _logger.debug('Sending text to %s: %s', chat_id, text[:100] + '...' if len(text) > 100 else text)
+        
+        data = {
             'session': self.session_name,
             'chatId': chat_id,
             'text': text
-        })
+        }
+        
+        # Add reply_to if provided - this helps establish context in the chat
+        #if reply_to:
+        #    data['reply_to'] = reply_to
+        #    _logger.debug('Replying to message: %s', reply_to)
+        
+        _logger.info("data: %s", data)
+        
+        result = self._make_request('POST', '/api/sendText', data=data)
+        _logger.info('=== WAHA API send_text() Response ===')
+        _logger.info('Message ID: %s', result.get('message_id', result.get('id', 'N/A')))
+        _logger.debug('Full response: %s', result)
+        
+        return result
 
     def send_image(self, chat_id, image_data, caption=None):
         """
@@ -255,20 +291,120 @@ class WahaApi:
     # ============================================================
 
     def get_contacts(self):
-        """Get all contacts"""
-        return self._make_request('GET', '/api/contacts', data={
-            'session': self.session_name
-        })
+        """Get all contacts for this session
+        
+        Note: This endpoint is not commonly used. Use get_contact() for specific lookups.
+        """
+        # WAHA endpoint: GET /api/contacts?session={session}
+        # This endpoint may not be available in all WAHA versions
+        try:
+            return self._make_request('GET', f'/api/contacts?session={self.session_name}')
+        except Exception as e:
+            _logger.warning('get_contacts not available (non-critical): %s', str(e))
+            return []
+
+    def get_contact(self, phone_number):
+        """Get a specific contact by phone number
+        
+        Args:
+            phone_number: Phone number (with or without country code)
+        
+        Returns:
+            Contact information dict or None if not found
+        """
+        try:
+            # Normalize phone to WhatsApp format (e.g., 1234567890@c.us)
+            normalized_phone = str(phone_number).replace('+', '').replace(' ', '')
+            
+            # Try different WhatsApp ID formats
+            contact_ids = [
+                f"{normalized_phone}@c.us",
+                f"{normalized_phone}@lid",
+                normalized_phone,
+            ]
+            
+            # WAHA endpoint: GET /api/contacts?session={session}&contactId={contactId}
+            for contact_id in contact_ids:
+                try:
+                    result = self._make_request(
+                        'GET',
+                        f'/api/contacts?session={self.session_name}&contactId={contact_id}'
+                    )
+                    
+                    # If we get a valid response (not error), return it
+                    if result and isinstance(result, str):
+                        # API returns a string with contact info
+                        return {'id': contact_id, 'name': result}
+                    elif result:
+                        return result
+                        
+                except Exception:
+                    # Try next format
+                    continue
+            
+            _logger.debug('Contact not found in WhatsApp for: %s', phone_number)
+            return None
+            
+        except Exception as e:
+            import logging
+            _logger = logging.getLogger(__name__)
+            _logger.warning('Could not get contact from WAHA (non-critical): %s', str(e))
+            return None
+
+    def get_contact_profile_picture(self, contact_id):
+        """Get contact's profile picture URL
+        
+        Args:
+            contact_id: WhatsApp contact ID (e.g., 1234567890@c.us)
+        
+        Returns:
+            Profile picture URL (string) or None if not available
+        """
+        try:
+            # WAHA endpoint: GET /api/contacts/profile-picture?session={session}&contactId={contactId}
+            result = self._make_request(
+                'GET',
+                f'/api/contacts/profile-picture?session={self.session_name}&contactId={contact_id}'
+            )
+            
+            # API returns a string with the URL or null
+            if result and isinstance(result, str) and result != 'null':
+                return result
+            
+            return None
+            
+        except Exception as e:
+            _logger.debug('Could not get profile picture for %s: %s', contact_id, str(e))
+            return None
+
+    def get_group_info(self, group_id):
+        """Get group information
+        
+        Args:
+            group_id: WhatsApp group ID (e.g., 123456@g.us)
+        
+        Returns:
+            Group information dict or None if not found
+        """
+        try:
+            # WAHA endpoint: GET /api/{session}/groups/{id}
+            result = self._make_request(
+                'GET',
+                f'/api/{self.session_name}/groups/{group_id}'
+            )
+            
+            return result if result else None
+            
+        except Exception as e:
+            _logger.debug('Could not get group info for %s: %s', group_id, str(e))
+            return None
 
     def get_chats(self):
-        """Get all chats"""
-        return self._make_request('GET', '/api/chats', data={
-            'session': self.session_name
-        })
+        """Get all chats for this session"""
+        # WAHA requires session name in the URL path
+        return self._make_request('GET', f'/api/{self.session_name}/chats')
 
     def get_messages(self, chat_id, limit=100):
         """Get messages from a chat"""
-        return self._make_request('GET', f'/api/chats/{chat_id}/messages', data={
-            'session': self.session_name,
-            'limit': limit
-        })
+        # WAHA requires session name in the URL path
+        return self._make_request('GET', f'/api/{self.session_name}/chats/{chat_id}/messages?limit={limit}')

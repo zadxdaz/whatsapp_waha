@@ -97,11 +97,15 @@ class WahaComposer(models.TransientModel):
         if not self.body:
             raise ValidationError(_('Message body is required'))
         
+        # Clean HTML tags from body
+        import re
+        clean_body = re.sub(r'<[^>]+>', '', (self.preview_body or self.body)).strip()
+        
         # Prepare message data
         message_vals = {
             'wa_account_id': self.wa_account_id.id,
             'mobile_number': self.mobile_number,
-            'body': self.preview_body or self.body,
+            'body': clean_body,
             'message_type': 'outbound',
         }
         
@@ -116,7 +120,7 @@ class WahaComposer(models.TransientModel):
             try:
                 record = self.env[self.res_model].browse(self.res_id)
                 mail_message = record.message_post(
-                    body=self.preview_body or self.body,
+                    body=clean_body,
                     message_type='comment',
                     subtype_xmlid='mail.mt_comment',
                     author_id=self.env.user.partner_id.id,
