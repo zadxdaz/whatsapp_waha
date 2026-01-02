@@ -7,10 +7,8 @@
         <field name="arch" type="xml">
             <form string="WhatsApp Message">
                 <header>
-                    <button name="action_send" string="Send" type="object"
+                    <button name="action_retry_send" string="Retry Send" type="object"
                             class="oe_highlight"
-                            invisible="state != 'outgoing'"/>
-                    <button name="action_retry" string="Retry" type="object"
                             invisible="state not in ['error', 'bounced']"/>
                     <field name="state" widget="statusbar"/>
                 </header>
@@ -19,13 +17,13 @@
                     <group string="Account &amp; Contact">
                         <group>
                             <field name="wa_account_id"/>
-                            <field name="mobile_number"/>
-                            <field name="mobile_number_formatted" readonly="1"/>
+                            <field name="partner_id" readonly="1"/>
+                            <field name="waha_chat_id" readonly="1"/>
                         </group>
                         <group>
                             <field name="message_type" widget="badge"/>
+                            <field name="content_type" widget="badge"/>
                             <field name="participant_id" readonly="1"/>
-                            <field name="waha_chat_id" readonly="1"/>
                         </group>
                     </group>
 
@@ -38,34 +36,45 @@
                     <group string="Message Details">
                         <group>
                             <field name="msg_uid" readonly="1"/>
-                            <field name="reply_to_msg_uid" readonly="1"/>
-                            <field name="wa_template_id"/>
+                            <field name="reply_to_message_id"/>
+                            <field name="reply_to_msg_uid"/>
                         </group>
                         <group>
-                            <field name="parent_id"/>
                             <field name="mail_message_id" readonly="1"/>
+                            <field name="wa_timestamp" readonly="1"/>
                             <field name="create_date" readonly="1"/>
                         </group>
                     </group>
 
-                    <!-- Template Parameters -->
-                    <group string="Template Parameters" invisible="not wa_template_id">
-                        <field name="free_text_json" nolabel="1" widget="ace"/>
-                    </group>
-
                     <!-- Failure Information -->
-                    <group string="Failure Information" invisible="state not in ['error', 'bounced']">
+                    <group string="Failure Information" invisible="state != 'error'">
                         <group>
                             <field name="failure_type"/>
                             <field name="failure_reason"/>
                         </group>
                     </group>
 
+                    <!-- Attachments -->
+                    <group string="Attachments" invisible="not attachment_ids">
+                        <field name="attachment_ids" nolabel="1"/>
+                    </group>
+
                     <!-- Technical Information -->
                     <notebook>
                         <page string="Technical Info" groups="base.group_no_one">
                             <group>
-                                <field name="free_text_json" widget="ace"/>
+                                <group>
+                                    <field name="raw_chat_id"/>
+                                    <field name="raw_sender_phone"/>
+                                </group>
+                                <group>
+                                    <field name="sent_date" readonly="1"/>
+                                    <field name="delivered_date" readonly="1"/>
+                                    <field name="read_date" readonly="1"/>
+                                </group>
+                            </group>
+                            <group string="Raw Payload">
+                                <field name="raw_payload" nolabel="1" widget="ace" options="{'mode': 'json'}"/>
                             </group>
                         </page>
                     </notebook>
@@ -80,13 +89,13 @@
         <field name="model">waha.message</field>
         <field name="arch" type="xml">
             <list string="WhatsApp Messages" decoration-info="message_type=='inbound'" decoration-warning="message_type=='outbound'">
-                <field name="create_date"/>
+                <field name="wa_timestamp"/>
                 <field name="wa_account_id"/>
-                <field name="mobile_number"/>
-                <field name="participant_id" optional="hide"/>
+                <field name="partner_id"/>
                 <field name="waha_chat_id" optional="hide"/>
                 <field name="message_type" widget="badge"/>
-                <field name="body" widget="html"/>
+                <field name="content_type" widget="badge" optional="hide"/>
+                <field name="body"/>
                 <field name="state" 
                        decoration-success="state=='sent'"
                        decoration-info="state=='delivered'"
@@ -104,29 +113,33 @@
         <field name="model">waha.message</field>
         <field name="arch" type="xml">
             <search string="WhatsApp Messages">
-                <field name="mobile_number" filter_domain="['|', ('mobile_number', 'ilike', self), ('waha_chat_id', 'ilike', self)]"/>
+                <field name="partner_id"/>
                 <field name="body" filter_domain="[('body', 'ilike', self)]"/>
                 <field name="wa_account_id"/>
+                <field name="waha_chat_id"/>
                 <field name="msg_uid"/>
                 <separator/>
                 <filter string="Outbound" name="outbound" domain="[('message_type', '=', 'outbound')]"/>
                 <filter string="Inbound" name="inbound" domain="[('message_type', '=', 'inbound')]"/>
                 <separator/>
-                <filter string="Pending" name="pending" domain="[('state', 'in', ['outgoing'])]"/>
+                <filter string="Draft" name="draft" domain="[('state', '=', 'draft')]"/>
+                <filter string="Pending" name="pending" domain="[('state', '=', 'outgoing')]"/>
                 <filter string="Sent" name="sent" domain="[('state', '=', 'sent')]"/>
                 <filter string="Delivered" name="delivered" domain="[('state', '=', 'delivered')]"/>
                 <filter string="Read" name="read" domain="[('state', '=', 'read')]"/>
                 <filter string="Received" name="received" domain="[('state', '=', 'received')]"/>
-                <filter string="Failed" name="failed" domain="[('state', 'in', ['error', 'bounced'])]"/>
+                <filter string="Failed" name="failed" domain="[('state', '=', 'error')]"/>
                 <separator/>
-                <filter string="Today" name="today" domain="[('create_date', '&gt;=', context_today().strftime('%Y-%m-%d 00:00:00')), ('create_date', '&lt;=', context_today().strftime('%Y-%m-%d 23:59:59'))]"/>
+                <filter string="Today" name="today" domain="[('wa_timestamp', '&gt;=', context_today().strftime('%Y-%m-%d 00:00:00')), ('wa_timestamp', '&lt;=', context_today().strftime('%Y-%m-%d 23:59:59'))]"/>
                 <separator/>
                 <group expand="0" string="Group By">
                     <filter string="Account" name="group_account" context="{'group_by': 'wa_account_id'}"/>
                     <filter string="Type" name="group_type" context="{'group_by': 'message_type'}"/>
+                    <filter string="Content Type" name="group_content" context="{'group_by': 'content_type'}"/>
                     <filter string="State" name="group_state" context="{'group_by': 'state'}"/>
-                    <filter string="Phone Number" name="group_phone" context="{'group_by': 'mobile_number'}"/>
-                    <filter string="Date" name="group_date" context="{'group_by': 'create_date'}"/>
+                    <filter string="Contact" name="group_contact" context="{'group_by': 'partner_id'}"/>
+                    <filter string="Chat" name="group_chat" context="{'group_by': 'waha_chat_id'}"/>
+                    <filter string="Date" name="group_date" context="{'group_by': 'wa_timestamp'}"/>
                 </group>
             </search>
         </field>
