@@ -1,33 +1,27 @@
 /** @odoo-module **/
 
-import { DiscussSidebarCategories } from "@mail/core/web/discuss_sidebar_categories";
+import { fields } from "@mail/core/common/record";
+import { DiscussApp } from "@mail/core/public_web/discuss_app_model";
+import { _t } from "@web/core/l10n/translation";
 import { patch } from "@web/core/utils/patch";
 
-patch(DiscussSidebarCategories.prototype, {
-    setup() {
+patch(DiscussApp.prototype, {
+    setup(env) {
         super.setup(...arguments);
-    },
-
-    /**
-     * @override
-     * Add WhatsApp category to sidebar
-     */
-    get discussSidebarCategories() {
-        const categories = super.discussSidebarCategories;
-        
-        // Add WhatsApp category after Channels
-        const channelIndex = categories.findIndex(cat => cat.id === "channels");
-        if (channelIndex !== -1) {
-            categories.splice(channelIndex + 1, 0, {
-                id: "whatsapp",
-                label: this.env._t("WHATSAPP"),
-                canView: true,
-                canAdd: false,
-                serverStateKey: false,
-                collapsed: false,
-            });
-        }
-        
-        return categories;
+        this.whatsapp = fields.One("DiscussAppCategory", {
+            compute() {
+                return {
+                    addTitle: _t("Search WhatsApp Channel"),
+                    extraClass: "o-mail-DiscussSidebarCategory-whatsapp",
+                    hideWhenEmpty: true,
+                    icon: "fa fa-whatsapp",
+                    id: "whatsapp",
+                    name: _t("WHATSAPP"),
+                    sequence: 20,
+                    serverStateKey: "is_discuss_sidebar_category_whatsapp_open",
+                };
+            },
+            eager: true,
+        });
     },
 });

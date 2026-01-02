@@ -53,6 +53,7 @@
             'waha/static/src/scss/*.scss',
             'waha/static/src/core/common/**/*',
             'waha/static/src/core/web/**/*',
+            'waha/static/src/discuss/**/*',
             'waha/static/src/components/**/*',
             'waha/static/src/views/**/*',
         ],
