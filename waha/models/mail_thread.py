@@ -92,6 +92,8 @@ class MailThread(models.AbstractModel):
                         'raw_sender_phone': sender_phone,
                         'mail_message_id': result if isinstance(result, int) else False,
                     })
+
+                    _logger.info('mail_message_id: %s', isinstance(result, int) and result or (result.id if result else 'None'))
                     
                     _logger.info('Created waha.message %s (auto-send via compute, mail_msg: %s)', 
                                 waha_message.id, waha_message.mail_message_id.id if waha_message.mail_message_id else None)

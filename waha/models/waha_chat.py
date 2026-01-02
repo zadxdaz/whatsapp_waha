@@ -110,7 +110,7 @@ class WahaChat(models.Model):
             else:
                 chat.chat_type = 'individual'
     
-    @api.depends('wa_chat_id', 'wa_account_id', 'name')
+    @api.depends('wa_chat_id', 'wa_account_id', 'name', 'partner_id')
     def _compute_discuss_channel_id(self):
         """
         Auto-compute discuss channel relationship
@@ -135,8 +135,14 @@ class WahaChat(models.Model):
                 # Auto-create channel if missing
                 _logger.info('Auto-creating discuss.channel for chat: %s', chat.wa_chat_id)
                 
+                # Use partner name for individual chats, chat name for groups
+                if chat.chat_type == 'individual' and chat.partner_id:
+                    channel_name = chat.partner_id.name
+                else:
+                    channel_name = chat.name or chat.wa_chat_id
+                
                 channel_vals = {
-                    'name': chat.name or chat.wa_chat_id,
+                    'name': channel_name,
                     'channel_type': 'channel',
                     'description': chat.wa_chat_id,
                     'is_whatsapp': True,
