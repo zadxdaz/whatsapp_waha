@@ -249,6 +249,11 @@ class WahaMessage(models.Model):
                 message.partner_id = False
                 continue
             
+            # Skip if this is a group ID (groups don't have partners)
+            if '@g.us' in str(message.raw_sender_phone):
+                message.partner_id = False
+                continue
+            
             # Search for existing waha.partner
             waha_partner = self.env['waha.partner'].search([
                 ('phone_number', '=', message.raw_sender_phone),

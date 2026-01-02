@@ -117,6 +117,11 @@ class WahaPartner(models.Model):
         Returns:
             res.partner record
         """
+        # Don't create partners for group IDs
+        if '@g.us' in str(phone):
+            _logger.warning('Attempted to create partner for group ID: %s', phone)
+            return self.env['res.partner']
+        
         # Normalize phone number
         normalized_phone = self._normalize_phone(phone, wa_account)
         
@@ -144,7 +149,7 @@ class WahaPartner(models.Model):
         
         if not partner:
             # Create new partner
-            contact_name = normalized_phone  # Default name
+            contact_name = f"WhatsApp +{normalized_phone}"  # Default name with prefix
             contact_image = None
             
             # Try to get contact info from WAHA before creating
@@ -155,14 +160,16 @@ class WahaPartner(models.Model):
                     contact_info = api.get_contact(normalized_phone)
                     
                     if contact_info:
-                        contact_name = self._extract_contact_name(contact_info)
+                        extracted_name = self._extract_contact_name(contact_info)
+                        if extracted_name:  # Only use if not empty
+                            contact_name = extracted_name
                         contact_image = self._download_contact_avatar(
                             wa_account, contact_info
                         )
                 except Exception as e:
                     _logger.warning('Could not enrich contact from WAHA: %s', str(e))
             
-            # Create partner
+            # Create partner (name is guaranteed to be non-empty)
             partner_vals = {
                 'name': contact_name,
                 'mobile': f"+{normalized_phone}",
