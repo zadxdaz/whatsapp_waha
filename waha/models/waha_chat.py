@@ -143,7 +143,7 @@ class WahaChat(models.Model):
                 
                 channel_vals = {
                     'name': channel_name,
-                    'channel_type': 'channel',
+                    'channel_type': 'whatsapp',
                     'description': chat.wa_chat_id,
                     'is_whatsapp': True,
                     'whatsapp_account_id': chat.wa_account_id.id,

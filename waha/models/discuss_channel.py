@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from odoo import models, fields
+from odoo import models, fields, api
 
 
 class DiscussChannel(models.Model):
@@ -30,3 +30,10 @@ class DiscussChannel(models.Model):
         help='WhatsApp account this channel belongs to',
         ondelete='set null'
     )
+    
+    @api.model
+    def _get_channel_types(self):
+        """Add WhatsApp as a channel type"""
+        types = super()._get_channel_types()
+        types.append(('whatsapp', 'WhatsApp'))
+        return types
