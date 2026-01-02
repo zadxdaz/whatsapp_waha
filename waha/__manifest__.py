@@ -48,12 +48,6 @@
     'external_dependencies': {
         'python': ['phonenumbers', 'requests'],
     },
-    'assets': {
-        'web.assets_backend': [
-            'waha/static/src/core/common/**/*',
-            'waha/static/src/discuss/**/*',
-        ],
-    },
     'installable': True,
     'application': True,
     'auto_install': False,
