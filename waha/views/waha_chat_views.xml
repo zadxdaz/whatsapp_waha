@@ -5,7 +5,7 @@
         <field name="name">waha.chat.tree</field>
         <field name="model">waha.chat</field>
         <field name="arch" type="xml">
-            <tree string="WhatsApp Chats">
+            <list string="WhatsApp Chats">
                 <field name="name"/>
                 <field name="chat_type"/>
                 <field name="partner_id"/>
@@ -13,7 +13,7 @@
                 <field name="last_message_time"/>
                 <field name="message_count"/>
                 <field name="unread_count" string="Unread"/>
-            </tree>
+            </list>
         </field>
     </record>
 

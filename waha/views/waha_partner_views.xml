@@ -5,7 +5,7 @@
         <field name="name">waha.partner.tree</field>
         <field name="model">waha.partner</field>
         <field name="arch" type="xml">
-            <tree string="WhatsApp Contacts">
+            <list string="WhatsApp Contacts">
                 <field name="display_name"/>
                 <field name="phone_number"/>
                 <field name="wa_name"/>
@@ -13,7 +13,7 @@
                 <field name="wa_account_id"/>
                 <field name="is_contact_synced" widget="boolean"/>
                 <field name="last_sync_date"/>
-            </tree>
+            </list>
         </field>
     </record>
 
