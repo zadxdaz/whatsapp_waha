@@ -220,12 +220,14 @@ class WahaChat(models.Model):
             'name': chat_name,
             'wa_chat_id': chat_id,
             'wa_account_id': wa_account.id,
+            'chat_type': 'group' if is_group else 'individual',
         }
         
         # Note: partner_id and discuss_channel_id will be computed automatically
         
         chat = self.create(vals)
-        _logger.info('Created new waha.chat %s for chat_id %s (channel auto-created)', chat.id, chat_id)
+        _logger.info('Created new waha.chat %s for chat_id %s (type=%s, channel auto-created)', 
+                     chat.id, chat_id, vals['chat_type'])
         
         return chat
     
