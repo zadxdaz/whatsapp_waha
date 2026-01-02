@@ -574,7 +574,7 @@ class WahaMessage(models.Model):
     # ============================================================
     
     @api.model
-    def send_message(self, chat, partner, body, reply_to=None, attachments=None):
+    def send_message(self, chat, partner, body, reply_to=None, attachments=None, mail_message_id=None):
         """
         Send a new outbound WhatsApp message
         
@@ -584,6 +584,7 @@ class WahaMessage(models.Model):
             body: Message text
             reply_to: waha.message to reply to (optional)
             attachments: ir.attachment records (optional)
+            mail_message_id: mail.message ID to link (optional, prevents auto-creation)
             
         Returns:
             waha.message record
@@ -610,6 +611,10 @@ class WahaMessage(models.Model):
         }
         
         # Note: waha_chat_id and partner_id will be computed automatically
+        
+        # Link to existing mail.message if provided (prevents auto-creation)
+        if mail_message_id:
+            vals['mail_message_id'] = mail_message_id
         
         if reply_to:
             vals['reply_to_message_id'] = reply_to.id

@@ -70,25 +70,18 @@ class MailThread(models.AbstractModel):
                 try:
                     _logger.info('Delegating to waha.message.send_message')
                     
-                    # Create waha.message with mail_message_id already set to prevent duplication
+                    # Create waha.message with mail_message_id to prevent duplication
                     waha_message = self.env['waha.message'].sudo().send_message(
                         chat=waha_chat,
                         partner=partner,
                         body=message_body,
                         reply_to=None,
-                        attachments=None
+                        attachments=None,
+                        mail_message_id=result if isinstance(result, int) else None
                     )
                     
-                    # Link the mail.message to waha.message to prevent auto-creation
-                    if result and isinstance(result, int):
-                        waha_message.sudo().write({
-                            'mail_message_id': result
-                        })
-                        _logger.info('Linked mail.message %s to waha.message %s', 
-                                    result, waha_message.id)
-                    
-                    _logger.info('Message created and sent: %s (msg_uid: %s)', 
-                                waha_message.id, waha_message.msg_uid)
+                    _logger.info('Message created and sent: %s (msg_uid: %s, mail_msg: %s)', 
+                                waha_message.id, waha_message.msg_uid, waha_message.mail_message_id.id if waha_message.mail_message_id else None)
                 except Exception as e:
                     _logger.warning('Error sending message: %s', str(e))
                     # Don't fail the post, just warn
