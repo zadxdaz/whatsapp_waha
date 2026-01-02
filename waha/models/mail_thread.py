@@ -66,22 +66,35 @@ class MailThread(models.AbstractModel):
                     _logger.warning('No waha.chat found for channel %s', self.id)
                     return result
                 
-                # Delegate to waha.message.send_message
+                # Create waha.message (will be sent automatically via _compute_msg_uid)
                 try:
-                    _logger.info('Delegating to waha.message.send_message')
+                    _logger.info('Creating waha.message for outbound send')
+                    
+                    # Get phone number from partner
+                    waha_partner = self.env['waha.partner'].sudo().search([
+                        ('partner_id', '=', partner.id),
+                        ('wa_account_id', '=', wa_account.id)
+                    ], limit=1)
+                    
+                    sender_phone = waha_partner.phone_number if waha_partner else partner.mobile or partner.phone
+                    if sender_phone:
+                        sender_phone = sender_phone.replace('+', '').replace(' ', '').replace('-', '')
                     
                     # Create waha.message with mail_message_id to prevent duplication
-                    waha_message = self.env['waha.message'].sudo().send_message(
-                        chat=waha_chat,
-                        partner=partner,
-                        body=message_body,
-                        reply_to=None,
-                        attachments=None,
-                        mail_message_id=result if isinstance(result, int) else None
-                    )
+                    # Auto-send will happen via _compute_msg_uid
+                    waha_message = self.env['waha.message'].sudo().create({
+                        'wa_account_id': wa_account.id,
+                        'message_type': 'outbound',
+                        'content_type': 'text',
+                        'state': 'outgoing',
+                        'body': message_body,
+                        'raw_chat_id': waha_chat.wa_chat_id,
+                        'raw_sender_phone': sender_phone,
+                        'mail_message_id': result if isinstance(result, int) else False,
+                    })
                     
-                    _logger.info('Message created and sent: %s (msg_uid: %s, mail_msg: %s)', 
-                                waha_message.id, waha_message.msg_uid, waha_message.mail_message_id.id if waha_message.mail_message_id else None)
+                    _logger.info('Created waha.message %s (auto-send via compute, mail_msg: %s)', 
+                                waha_message.id, waha_message.mail_message_id.id if waha_message.mail_message_id else None)
                 except Exception as e:
                     _logger.warning('Error sending message: %s', str(e))
                     # Don't fail the post, just warn
