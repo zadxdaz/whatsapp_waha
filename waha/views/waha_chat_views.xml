@@ -39,7 +39,7 @@
                                 type="action" 
                                 class="oe_stat_button" 
                                 icon="fa-comments"
-                                context="{'search_default_waha_chat_id': active_id}">
+                                context="{'search_default_waha_chat_id': id}">
                             <field name="message_count" widget="statinfo" string="Messages"/>
                         </button>
                     </div>
