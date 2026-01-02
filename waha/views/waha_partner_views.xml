@@ -35,7 +35,7 @@
                 </header>
                 <sheet>
                     <widget name="web_ribbon" title="Business" bg_color="bg-success" 
-                            attrs="{'invisible': [('is_business', '=', False)]}"/>
+                            invisible="not is_business"/>
                     
                     <group>
                         <group>
@@ -63,7 +63,7 @@
                             </group>
                         </page>
                         <page string="Business Info" name="business_info" 
-                              attrs="{'invisible': [('is_business', '=', False)]}">
+                              invisible="not is_business">
                             <group>
                                 <field name="business_description"/>
                                 <field name="business_category"/>

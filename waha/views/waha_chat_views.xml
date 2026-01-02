@@ -27,11 +27,11 @@
                     <button name="sync_group_info_from_waha" 
                             string="Sync from WhatsApp" 
                             type="object"
-                            attrs="{'invisible': [('chat_type', '!=', 'group')]}"/>
+                            invisible="chat_type != 'group'"/>
                     <button name="mark_as_read" 
                             string="Mark as Read" 
                             type="object"
-                            attrs="{'invisible': [('unread_count', '=', 0)]}"/>
+                            invisible="unread_count == 0"/>
                 </header>
                 <sheet>
                     <div class="oe_button_box" name="button_box">
@@ -45,7 +45,7 @@
                     </div>
                     
                     <widget name="web_ribbon" title="Group" bg_color="bg-info" 
-                            attrs="{'invisible': [('chat_type', '!=', 'group')]}"/>
+                            invisible="chat_type != 'group'"/>
                     
                     <group>
                         <group>
@@ -55,14 +55,14 @@
                             <field name="wa_account_id"/>
                         </group>
                         <group>
-                            <field name="partner_id" attrs="{'invisible': [('chat_type', '=', 'group')]}"/>
+                            <field name="partner_id" invisible="chat_type == 'group'"/>
                             <field name="discuss_channel_id"/>
                             <field name="last_message_time"/>
                             <field name="unread_count"/>
                         </group>
                     </group>
                     
-                    <notebook attrs="{'invisible': [('chat_type', '!=', 'group')]}">
+                    <notebook invisible="chat_type != 'group'">
                         <page string="Participants" name="participants">
                             <field name="group_participants" widget="many2many_tags"/>
                         </page>
