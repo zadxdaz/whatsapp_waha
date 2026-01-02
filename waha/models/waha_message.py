@@ -128,8 +128,11 @@ class WahaMessage(models.Model):
     mail_message_id = fields.Many2one(
         'mail.message',
         string="Discuss Message",
+        compute='_compute_mail_message_id',
+        store=True,
+        readonly=False,
         ondelete='set null',
-        help="Linked message in Discuss channel"
+        help="Linked message in Discuss channel (auto-created)"
     )
     
     # Reply handling
@@ -261,47 +264,96 @@ class WahaMessage(models.Model):
                     auto_enrich=True
                 )
                 message.partner_id = partner
+    
+    @api.depends('waha_chat_id', 'partner_id', 'body', 'wa_timestamp')
+    def _compute_mail_message_id(self):
+        """
+        Auto-compute discuss message relationship
+        
+        Creates mail.message in the discuss channel if:
+        - waha_chat_id exists (with discuss_channel_id)
+        - partner_id exists (message author)
+        - No mail_message_id exists yet
+        """
+        for message in self:
+            # Skip if already has mail_message_id
+            if message.mail_message_id:
+                continue
+            
+            # Need chat and partner to create discuss message
+            if not message.waha_chat_id or not message.partner_id:
+                message.mail_message_id = False
+                continue
+            
+            # Get discuss channel from chat
+            discuss_channel = message.waha_chat_id.discuss_channel_id
+            if not discuss_channel:
+                message.mail_message_id = False
+                continue
+            
+            # Auto-create discuss message
+            _logger.info(
+                'Auto-creating discuss message for waha.message %s in channel %s',
+                message.id, discuss_channel.name
+            )
+            
+            try:
+                # Clean HTML from body
+                body_clean = re.sub(r'<[^>]+>', '', message.body or '').strip()
+                
+                # Prepare post params
+                post_params = {
+                    'body': body_clean,
+                    'message_type': 'comment',
+                    'subtype_xmlid': 'mail.mt_comment',
+                    'author_id': message.partner_id.id,
+                }
+                
+                if message.wa_timestamp:
+                    post_params['date'] = message.wa_timestamp
+                
+                # Create message (with flag to prevent recursion)
+                discuss_msg = discuss_channel.with_context(
+                    skip_whatsapp_send=True
+                ).message_post(**post_params)
+                
+                message.mail_message_id = discuss_msg
+                
+                _logger.info(
+                    'Created discuss message %s for waha.message %s',
+                    discuss_msg.id, message.id
+                )
+            except Exception as e:
+                _logger.error(
+                    'Failed to auto-create discuss message for waha.message %s: %s',
+                    message.id, str(e)
+                )
+                message.mail_message_id = False
 
     # ============================================================
     # HELPER METHODS
     # ============================================================
     
-    def create_discuss_message(self, discuss_channel, author_partner):
+    def create_discuss_message(self, discuss_channel=None, author_partner=None):
         """
-        Create mail.message in the discuss channel
+        Trigger creation of discuss message (now handled by computed field)
+        
+        This is now mostly a convenience method since mail_message_id
+        is computed automatically. Just triggers recomputation.
         
         Args:
-            discuss_channel: discuss.channel record
-            author_partner: res.partner (message author)
+            discuss_channel: Optional, for compatibility (not used)
+            author_partner: Optional, for compatibility (not used)
             
         Returns:
-            mail.message record
+            mail.message record (from mail_message_id)
         """
         self.ensure_one()
         
-        # Clean HTML from body
-        body_clean = re.sub(r'<[^>]+>', '', self.body).strip()
+        # Force recomputation of mail_message_id
+        self._compute_mail_message_id()
         
-        # Create message in channel
-        post_params = {
-            'body': body_clean,
-            'message_type': 'comment',
-            'subtype_xmlid': 'mail.mt_comment',
-            'author_id': author_partner.id,
-        }
-        
-        if self.wa_timestamp:
-            post_params['date'] = self.wa_timestamp
-        
-        # Use context flag to prevent recursion in mail_thread override
-        discuss_msg = discuss_channel.with_context(
-            skip_whatsapp_send=True
-        ).message_post(**post_params)
-        
-        self.write({'mail_message_id': discuss_msg.id})
-        _logger.info('Created discuss message: %s', discuss_msg.id)
-        
-        return discuss_msg
+        return self.mail_message_id
 
     # ============================================================
     # MEDIA ATTACHMENTS
@@ -461,11 +513,8 @@ class WahaMessage(models.Model):
                 'res_id': message.id,
             })
         
-        # Create discuss.message
-        discuss_channel = chat.get_or_create_discuss_channel()
-        admin_partner = self.env.ref('base.user_admin').sudo().partner_id
-        
-        message.create_discuss_message(discuss_channel, admin_partner)
+        # Note: mail_message_id will be computed automatically
+        # after waha_chat_id and partner_id are set
         
         # Send through WAHA
         try:
