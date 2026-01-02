@@ -143,7 +143,7 @@ class WahaChat(models.Model):
                 
                 channel_vals = {
                     'name': channel_name,
-                    'channel_type': 'whatsapp',
+                    'channel_type': 'channel',  # Use 'channel' type so they appear in sidebar
                     'description': chat.wa_chat_id,
                     'is_whatsapp': True,
                     'whatsapp_account_id': chat.wa_account_id.id,

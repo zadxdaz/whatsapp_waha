@@ -5,12 +5,6 @@ from odoo import models, fields, api
 class DiscussChannel(models.Model):
     _inherit = 'discuss.channel'
 
-    # Extend channel_type selection to add WhatsApp
-    channel_type = fields.Selection(
-        selection_add=[('whatsapp', 'WhatsApp')],
-        ondelete={'whatsapp': 'cascade'}
-    )
-
     is_whatsapp = fields.Boolean(
         string='Is WhatsApp Channel',
         default=False,
@@ -35,21 +29,3 @@ class DiscussChannel(models.Model):
         help='WhatsApp account this channel belongs to',
         ondelete='set null'
     )
-    
-    @api.model
-    def channel_get(self, partners_to=None, pin=True):
-        """Override to handle WhatsApp channel creation"""
-        # For WhatsApp channels, we don't want auto-creation through this method
-        if self.env.context.get('default_channel_type') == 'whatsapp':
-            return False
-        return super().channel_get(partners_to=partners_to, pin=pin)
-    
-    def _channel_format(self, fields=None):
-        """Ensure WhatsApp channels are properly formatted for frontend"""
-        res = super()._channel_format(fields=fields)
-        # WhatsApp channels should be treated as 'channel' type for sidebar display
-        for channel_data in res:
-            if channel_data.get('channel_type') == 'whatsapp':
-                # Keep the whatsapp type but ensure it displays in CHANNELS section
-                channel_data['is_whatsapp'] = True
-        return res
