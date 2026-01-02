@@ -28,6 +28,10 @@
                             string="Sync from WhatsApp" 
                             type="object"
                             invisible="chat_type != 'group'"/>
+                    <button name="action_update_channel_name" 
+                            string="Update Channel Name" 
+                            type="object"
+                            class="btn-primary"/>
                     <button name="mark_as_read" 
                             string="Mark as Read" 
                             type="object"

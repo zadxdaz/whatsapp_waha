@@ -458,3 +458,30 @@ class WahaChat(models.Model):
         """Reset unread counter"""
         self.ensure_one()
         self.write({'unread_count': 0})
+    
+    def action_update_channel_name(self):
+        """Update discuss channel name based on chat type and partner"""
+        self.ensure_one()
+        
+        if not self.discuss_channel_id:
+            raise UserError(_('No Discuss channel linked to this chat'))
+        
+        # Use partner name for individual chats, chat name for groups
+        if self.chat_type == 'individual' and self.partner_id:
+            new_name = self.partner_id.name
+        else:
+            new_name = self.name or self.wa_chat_id
+        
+        self.discuss_channel_id.write({'name': new_name})
+        _logger.info('Updated channel name to: %s', new_name)
+        
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': _('Channel Updated'),
+                'message': _('Channel name updated to: %s') % new_name,
+                'type': 'success',
+                'sticky': False,
+            }
+        }
