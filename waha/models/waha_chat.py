@@ -55,6 +55,9 @@ class WahaChat(models.Model):
     discuss_channel_id = fields.Many2one(
         'discuss.channel',
         string="Discuss Channel",
+        compute='_compute_discuss_channel_id',
+        store=True,
+        readonly=False,
         ondelete='set null',
         help="Linked Discuss channel for this conversation"
     )
@@ -62,6 +65,9 @@ class WahaChat(models.Model):
     partner_id = fields.Many2one(
         'res.partner',
         string="Contact",
+        compute='_compute_partner_id',
+        store=True,
+        readonly=False,
         help="Contact for 1-1 chats (null for groups)"
     )
     
@@ -103,6 +109,75 @@ class WahaChat(models.Model):
                 chat.chat_type = 'group' if '@g.us' in chat.wa_chat_id else 'individual'
             else:
                 chat.chat_type = 'individual'
+    
+    @api.depends('wa_chat_id', 'wa_account_id', 'name')
+    def _compute_discuss_channel_id(self):
+        """
+        Auto-compute discuss channel relationship
+        
+        Searches for existing channel or creates one if missing
+        """
+        for chat in self:
+            if not chat.wa_chat_id or not chat.wa_account_id:
+                chat.discuss_channel_id = False
+                continue
+            
+            # Search for existing channel
+            channel = self.env['discuss.channel'].sudo().search([
+                ('wa_chat_id', '=', chat.wa_chat_id),
+                ('is_whatsapp', '=', True),
+                ('whatsapp_account_id', '=', chat.wa_account_id.id),
+            ], limit=1)
+            
+            if channel:
+                chat.discuss_channel_id = channel
+            else:
+                # Auto-create channel if missing
+                _logger.info('Auto-creating discuss.channel for chat: %s', chat.wa_chat_id)
+                
+                channel_vals = {
+                    'name': chat.name or chat.wa_chat_id,
+                    'channel_type': 'channel',
+                    'description': chat.wa_chat_id,
+                    'is_whatsapp': True,
+                    'whatsapp_account_id': chat.wa_account_id.id,
+                    'wa_chat_id': chat.wa_chat_id,
+                }
+                
+                channel = self.env['discuss.channel'].sudo().create(channel_vals)
+                chat.discuss_channel_id = channel
+                
+                # Add initial members
+                chat._sync_channel_members()
+    
+    @api.depends('wa_chat_id', 'chat_type')
+    def _compute_partner_id(self):
+        """
+        Auto-compute partner for 1-1 chats
+        
+        For individual chats, tries to find partner from wa_chat_id
+        For groups, partner is always False
+        """
+        for chat in self:
+            if chat.chat_type == 'group':
+                chat.partner_id = False
+                continue
+            
+            if not chat.wa_chat_id:
+                chat.partner_id = False
+                continue
+            
+            # Extract phone from chat_id
+            phone = chat.wa_chat_id.split('@')[0]
+            
+            # Search for partner
+            partner = self.env['res.partner'].sudo().search([
+                '|',
+                ('mobile', 'ilike', phone),
+                ('phone', 'ilike', phone)
+            ], limit=1)
+            
+            chat.partner_id = partner if partner else False
 
     # ============================================================
     # CRUD & LIFECYCLE
@@ -147,14 +222,10 @@ class WahaChat(models.Model):
             'wa_account_id': wa_account.id,
         }
         
-        if partner and not is_group:
-            vals['partner_id'] = partner.id
+        # Note: partner_id and discuss_channel_id will be computed automatically
         
         chat = self.create(vals)
-        _logger.info('Created new waha.chat %s for chat_id %s', chat.id, chat_id)
-        
-        # Create discuss channel
-        chat._create_discuss_channel()
+        _logger.info('Created new waha.chat %s for chat_id %s (channel auto-created)', chat.id, chat_id)
         
         return chat
     
@@ -176,42 +247,20 @@ class WahaChat(models.Model):
     # DISCUSS CHANNEL MANAGEMENT
     # ============================================================
     
-    def _create_discuss_channel(self):
-        """Create linked discuss.channel for this chat"""
-        self.ensure_one()
-        
-        if self.discuss_channel_id:
-            _logger.warning('Discuss channel already exists for chat %s', self.id)
-            return self.discuss_channel_id
-        
-        # Prepare channel values
-        channel_vals = {
-            'name': self.name,
-            'channel_type': 'channel',  # Always 'channel' for WhatsApp
-            'description': self.wa_chat_id,
-            'is_whatsapp': True,
-            'whatsapp_account_id': self.wa_account_id.id,
-            'wa_chat_id': self.wa_chat_id,
-        }
-        
-        channel = self.env['discuss.channel'].sudo().create(channel_vals)
-        self.write({'discuss_channel_id': channel.id})
-        
-        _logger.info('Created discuss.channel %s for waha.chat %s', channel.id, self.id)
-        
-        # Add initial members
-        self._sync_channel_members()
-        
-        return channel
-    
     def get_or_create_discuss_channel(self):
-        """Get existing discuss channel or create if missing"""
+        """
+        Get existing discuss channel (auto-created by computed field)
+        
+        The discuss_channel_id is now auto-computed, so this method
+        just ensures it exists and returns it.
+        """
         self.ensure_one()
         
-        if self.discuss_channel_id and self.discuss_channel_id.exists():
-            return self.discuss_channel_id
+        # Trigger recompute if needed
+        if not self.discuss_channel_id:
+            self._compute_discuss_channel_id()
         
-        return self._create_discuss_channel()
+        return self.discuss_channel_id
     
     def _sync_channel_members(self):
         """Sync channel members with discuss.channel"""
