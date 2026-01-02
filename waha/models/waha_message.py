@@ -91,10 +91,24 @@ class WahaMessage(models.Model):
     # Content
     body = fields.Text(string="Message Content", required=True)
     
-    # Links to other models
+    # Raw WAHA identifiers (used to compute relationships)
+    raw_chat_id = fields.Char(
+        string="Raw Chat ID",
+        help="Original chat ID from WAHA (e.g., 123456@c.us or 123456@g.us)"
+    )
+    
+    raw_sender_phone = fields.Char(
+        string="Raw Sender Phone",
+        help="Sender's phone number (normalized, no symbols)"
+    )
+    
+    # Links to other models (computed automatically)
     waha_chat_id = fields.Many2one(
         'waha.chat',
         string="Chat",
+        compute='_compute_waha_chat_id',
+        store=True,
+        readonly=False,
         ondelete='set null',
         index=True,
         help="WhatsApp chat/conversation this message belongs to"
@@ -103,6 +117,9 @@ class WahaMessage(models.Model):
     partner_id = fields.Many2one(
         'res.partner',
         string="Contact",
+        compute='_compute_partner_id',
+        store=True,
+        readonly=False,
         ondelete='set null',
         index=True,
         help="Contact who sent/received this message"
@@ -164,6 +181,86 @@ class WahaMessage(models.Model):
          'unique(msg_uid, wa_account_id)',
          "Each WhatsApp message ID must be unique per account.")
     ]
+
+    # ============================================================
+    # COMPUTED FIELDS - AUTO RELATIONSHIPS
+    # ============================================================
+    
+    @api.depends('raw_chat_id', 'wa_account_id')
+    def _compute_waha_chat_id(self):
+        """
+        Auto-compute chat relationship from raw_chat_id
+        
+        This ensures that waha_chat_id is always correctly set,
+        regardless of how the message was created.
+        """
+        for message in self:
+            if not message.raw_chat_id or not message.wa_account_id:
+                message.waha_chat_id = False
+                continue
+            
+            # Search for existing chat
+            chat = self.env['waha.chat'].search([
+                ('wa_chat_id', '=', message.raw_chat_id),
+                ('wa_account_id', '=', message.wa_account_id.id)
+            ], limit=1)
+            
+            if chat:
+                message.waha_chat_id = chat
+            else:
+                # Auto-create chat if missing
+                _logger.info('Auto-creating chat for raw_chat_id: %s', message.raw_chat_id)
+                
+                # Determine partner for 1-1 chats
+                partner = None
+                if message.partner_id:
+                    partner = message.partner_id
+                elif message.raw_sender_phone and '@g.us' not in message.raw_chat_id:
+                    # Try to find partner for 1-1 chat
+                    partner = self.env['waha.partner'].find_or_create_by_phone(
+                        phone=message.raw_sender_phone,
+                        wa_account=message.wa_account_id,
+                        auto_enrich=False
+                    )
+                
+                chat = self.env['waha.chat'].find_or_create(
+                    wa_account=message.wa_account_id,
+                    chat_id=message.raw_chat_id,
+                    partner=partner
+                )
+                message.waha_chat_id = chat
+    
+    @api.depends('raw_sender_phone', 'wa_account_id', 'message_type')
+    def _compute_partner_id(self):
+        """
+        Auto-compute partner relationship from raw_sender_phone
+        
+        For inbound messages: partner is the sender
+        For outbound messages: partner is the recipient
+        """
+        for message in self:
+            if not message.raw_sender_phone or not message.wa_account_id:
+                message.partner_id = False
+                continue
+            
+            # Search for existing waha.partner
+            waha_partner = self.env['waha.partner'].search([
+                ('phone_number', '=', message.raw_sender_phone),
+                ('wa_account_id', '=', message.wa_account_id.id)
+            ], limit=1)
+            
+            if waha_partner:
+                message.partner_id = waha_partner.partner_id
+            else:
+                # Auto-create partner if missing
+                _logger.info('Auto-creating partner for phone: %s', message.raw_sender_phone)
+                
+                partner = self.env['waha.partner'].find_or_create_by_phone(
+                    phone=message.raw_sender_phone,
+                    wa_account=message.wa_account_id,
+                    auto_enrich=True
+                )
+                message.partner_id = partner
 
     # ============================================================
     # CREATE FROM WEBHOOK
@@ -324,8 +421,8 @@ class WahaMessage(models.Model):
             'content_type': context['content_type'],
             'state': 'sent' if context['from_me'] else 'received',
             'body': context['body'],
-            'waha_chat_id': chat.id,
-            'partner_id': partner.id,
+            'raw_chat_id': context['chat_id'],
+            'raw_sender_phone': context['sender_phone'],
             'wa_timestamp': context['wa_timestamp'],
             'raw_payload': context['raw_payload'],
         }
@@ -333,8 +430,10 @@ class WahaMessage(models.Model):
         if context['participant']:
             vals['participant_id'] = context['participant']
         
+        # Note: waha_chat_id and partner_id will be computed automatically
+        # from raw_chat_id and raw_sender_phone
         message = self.create(vals)
-        _logger.info('Created waha.message: %s', message.id)
+        _logger.info('Created waha.message: %s (chat and partner auto-linked)', message.id)
         return message
 
     # ============================================================
@@ -497,6 +596,16 @@ class WahaMessage(models.Model):
         Returns:
             waha.message record
         """
+        # Find phone number from partner
+        waha_partner = self.env['waha.partner'].search([
+            ('partner_id', '=', partner.id),
+            ('wa_account_id', '=', chat.wa_account_id.id)
+        ], limit=1)
+        
+        sender_phone = waha_partner.phone_number if waha_partner else partner.mobile or partner.phone
+        if sender_phone:
+            sender_phone = sender_phone.replace('+', '').replace(' ', '').replace('-', '')
+        
         # Create waha.message record
         vals = {
             'wa_account_id': chat.wa_account_id.id,
@@ -504,9 +613,11 @@ class WahaMessage(models.Model):
             'content_type': 'document' if attachments else 'text',
             'state': 'outgoing',
             'body': body,
-            'waha_chat_id': chat.id,
-            'partner_id': partner.id,
+            'raw_chat_id': chat.wa_chat_id,
+            'raw_sender_phone': sender_phone,
         }
+        
+        # Note: waha_chat_id and partner_id will be computed automatically
         
         if reply_to:
             vals['reply_to_message_id'] = reply_to.id
