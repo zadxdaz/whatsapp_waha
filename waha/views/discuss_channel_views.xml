@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Inherit discuss.channel form view to show WhatsApp fields -->
+    <record id="discuss_channel_view_form_whatsapp" model="ir.ui.view">
+        <field name="name">discuss.channel.view.form.inherit.waha</field>
+        <field name="model">discuss.channel</field>
+        <field name="inherit_id" ref="mail.discuss_channel_view_form"/>
+        <field name="priority" eval="11"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet/div[hasclass('oe_title')]/h1/field" position="attributes">
+                <attribute name="readonly">channel_type == 'whatsapp'</attribute>
+            </xpath>
+            <xpath expr="//sheet/group[hasclass('o_label_nowrap')]" position="after">
+                <group class="o_label_nowrap" invisible="channel_type != 'whatsapp'">
+                    <field name="whatsapp_account_id" readonly="1"/>
+                    <field name="wa_chat_id" readonly="1"/>
+                    <field name="whatsapp_group_id" readonly="1"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- List view for WhatsApp channels -->
+    <record id="discuss_channel_view_list_whatsapp" model="ir.ui.view">
+        <field name="name">discuss.channel.view.list.waha</field>
+        <field name="model">discuss.channel</field>
+        <field name="arch" type="xml">
+            <list string="WhatsApp Chats" 
+                  decoration-muted="not is_whatsapp"
+                  default_order="create_date desc">
+                <field name="is_whatsapp" column_invisible="1"/>
+                <field name="channel_type" column_invisible="1"/>
+                <field name="create_date" string="Created On"/>
+                <field name="name"/>
+                <field name="whatsapp_account_id"/>
+                <field name="channel_partner_ids" widget="many2many_tags" string="Members"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Action to show WhatsApp channels -->
+    <record id="action_discuss_channel_whatsapp" model="ir.actions.act_window">
+        <field name="name">WhatsApp Channels</field>
+        <field name="res_model">discuss.channel</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('channel_type', '=', 'whatsapp')]</field>
+        <field name="context">{'default_channel_type': 'whatsapp'}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No WhatsApp channels found
+            </p>
+            <p>
+                WhatsApp channels are created automatically when you receive messages from WAHA.
+            </p>
+        </field>
+    </record>
+
+    <!-- Menu item for WhatsApp channels (optional, under Discuss if needed) -->
+    <menuitem id="menu_discuss_channel_whatsapp"
+              name="WhatsApp Channels"
+              parent="mail.menu_root_discuss"
+              action="action_discuss_channel_whatsapp"
+              sequence="15"/>
+</odoo>

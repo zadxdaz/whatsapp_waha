@@ -33,6 +33,7 @@
         'wizard/waha_composer_views.xml',
         
         # Views
+        'views/discuss_channel_views.xml',
         'views/waha_account_views.xml',
         'views/waha_chat_views.xml',
         'views/waha_partner_views.xml',
