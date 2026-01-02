@@ -57,16 +57,27 @@ class MailThread(models.AbstractModel):
                 # Get message body
                 message_body = kwargs.get('body', '')
                 
-                # Delegate to waha.message.process_outbound_send
+                # Get waha.chat for this channel
+                waha_chat = self.env['waha.chat'].sudo().search([
+                    ('discuss_channel_id', '=', self.id)
+                ], limit=1)
+                
+                if not waha_chat:
+                    _logger.warning('No waha.chat found for channel %s', self.id)
+                    return result
+                
+                # Delegate to waha.message.send_message
                 try:
-                    _logger.info('Delegating to waha.message.process_outbound_send')
-                    send_result = self.env['waha.message'].sudo().process_outbound_send(
-                        channel=self,
+                    _logger.info('Delegating to waha.message.send_message')
+                    message = self.env['waha.message'].sudo().send_message(
+                        chat=waha_chat,
                         partner=partner,
-                        text_body=message_body,
-                        reply_to_msg_uid=None
+                        body=message_body,
+                        reply_to=None,
+                        attachments=None
                     )
-                    _logger.info('Message sent: %s', send_result.get('success'))
+                    _logger.info('Message created and sent: %s (msg_uid: %s)', 
+                                message.id, message.msg_uid)
                 except Exception as e:
                     _logger.warning('Error sending message: %s', str(e))
                     # Don't fail the post, just warn
