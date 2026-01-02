@@ -263,191 +263,19 @@ class WahaMessage(models.Model):
                 message.partner_id = partner
 
     # ============================================================
-    # CREATE FROM WEBHOOK
+    # HELPER METHODS
     # ============================================================
     
-    @api.model
-    def create_from_webhook(self, webhook_payload, wa_account):
-        """
-        Create waha.message from WAHA webhook payload
-        
-        This is the main entry point for incoming messages.
-        Orchestrates the creation of message, chat, and partner records.
-        
-        Args:
-            webhook_payload: Complete webhook JSON from WAHA
-            wa_account: waha.account record
-            
-        Returns:
-            waha.message record
-        """
-        try:
-            payload = webhook_payload.get('payload', {})
-            msg_uid = payload.get('id')
-            
-            _logger.info('=== create_from_webhook: %s ===', msg_uid)
-            
-            # Check if already exists
-            existing = self.search([
-                ('msg_uid', '=', msg_uid),
-                ('wa_account_id', '=', wa_account.id)
-            ], limit=1)
-            
-            if existing:
-                _logger.info('Message already exists: %s', existing.id)
-                return existing
-            
-            # Extract message context
-            context = self._extract_message_context(payload, wa_account)
-            
-            # Find or create partner
-            WahaPartner = self.env['waha.partner']
-            partner = WahaPartner.find_or_create_by_phone(
-                phone=context['sender_phone'],
-                wa_account=wa_account,
-                auto_enrich=True
-            )
-            
-            # Find or create chat
-            WahaChat = self.env['waha.chat']
-            chat = WahaChat.find_or_create(
-                wa_account=wa_account,
-                chat_id=context['chat_id'],
-                partner=partner if not context['is_group'] else None
-            )
-            
-            # Create waha.message
-            message = self._create_message_record(context, wa_account, chat, partner)
-            
-            # Create discuss.message in channel
-            discuss_channel = chat.get_or_create_discuss_channel()
-            message._create_discuss_message(discuss_channel, partner, context)
-            
-            # Process media attachments
-            if context['content_type'] != 'text':
-                message._process_media_from_payload(payload, context['content_type'])
-            
-            # Update chat metadata
-            chat.update_last_message(message.wa_timestamp)
-            
-            _logger.info('Successfully created message: %s', message.id)
-            return message
-            
-        except Exception as e:
-            _logger.exception('Error creating message from webhook: %s', str(e))
-            raise
-    
-    def _extract_message_context(self, payload, wa_account):
-        """
-        Extract and normalize message context from WAHA payload
-        
-        Returns:
-            dict with parsed message information
-        """
-        # Extract basic info
-        from_raw = payload.get('from', '')
-        from_me = payload.get('fromMe', False)
-        participant = payload.get('participant', '')
-        
-        # Determine chat type
-        is_group = '@g.us' in from_raw
-        chat_id = from_raw
-        
-        # Extract sender phone
-        if is_group and participant:
-            sender_phone = participant.split('@')[0]
-        else:
-            sender_phone = from_raw.split('@')[0]
-        
-        # Extract content
-        body = payload.get('body', '')
-        if isinstance(body, dict):
-            body = body.get('text', '') or str(body)
-        elif not isinstance(body, str):
-            body = str(body) if body else ''
-        
-        # Detect content type
-        content_type = self._detect_content_type(payload)
-        
-        # Extract timestamp
-        timestamp_value = payload.get('timestamp')
-        wa_timestamp = None
-        if timestamp_value:
-            try:
-                wa_timestamp = datetime.fromtimestamp(int(timestamp_value))
-            except (ValueError, TypeError):
-                wa_timestamp = fields.Datetime.now()
-        
-        return {
-            'msg_uid': payload.get('id'),
-            'from_me': from_me,
-            'chat_id': chat_id,
-            'is_group': is_group,
-            'sender_phone': sender_phone,
-            'participant': participant,
-            'body': body,
-            'content_type': content_type,
-            'wa_timestamp': wa_timestamp or fields.Datetime.now(),
-            'raw_payload': payload,
-        }
-    
-    def _detect_content_type(self, payload):
-        """Detect content type from WAHA payload"""
-        if payload.get('location'):
-            return 'location'
-        
-        if payload.get('hasMedia'):
-            msg_type = payload.get('type', 'text')
-            
-            type_mapping = {
-                'image': 'image',
-                'video': 'video',
-                'audio': 'audio',
-                'document': 'document',
-                'sticker': 'sticker',
-                'ptt': 'audio',  # Push-to-talk voice message
-            }
-            
-            return type_mapping.get(msg_type, 'document')
-        
-        return 'text'
-    
-    def _create_message_record(self, context, wa_account, chat, partner):
-        """Create waha.message record from context"""
-        vals = {
-            'msg_uid': context['msg_uid'],
-            'wa_account_id': wa_account.id,
-            'message_type': 'outbound' if context['from_me'] else 'inbound',
-            'content_type': context['content_type'],
-            'state': 'sent' if context['from_me'] else 'received',
-            'body': context['body'],
-            'raw_chat_id': context['chat_id'],
-            'raw_sender_phone': context['sender_phone'],
-            'wa_timestamp': context['wa_timestamp'],
-            'raw_payload': context['raw_payload'],
-        }
-        
-        if context['participant']:
-            vals['participant_id'] = context['participant']
-        
-        # Note: waha_chat_id and partner_id will be computed automatically
-        # from raw_chat_id and raw_sender_phone
-        message = self.create(vals)
-        _logger.info('Created waha.message: %s (chat and partner auto-linked)', message.id)
-        return message
-
-    # ============================================================
-    # DISCUSS MESSAGE CREATION
-    # ============================================================
-    
-    def _create_discuss_message(self, discuss_channel, author_partner, context):
+    def create_discuss_message(self, discuss_channel, author_partner):
         """
         Create mail.message in the discuss channel
         
         Args:
             discuss_channel: discuss.channel record
             author_partner: res.partner (message author)
-            context: Message context dict
+            
+        Returns:
+            mail.message record
         """
         self.ensure_one()
         
@@ -637,11 +465,7 @@ class WahaMessage(models.Model):
         discuss_channel = chat.get_or_create_discuss_channel()
         admin_partner = self.env.ref('base.user_admin').sudo().partner_id
         
-        message._create_discuss_message(
-            discuss_channel,
-            admin_partner,
-            {'wa_timestamp': fields.Datetime.now()}
-        )
+        message.create_discuss_message(discuss_channel, admin_partner)
         
         # Send through WAHA
         try:

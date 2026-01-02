@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import json
 import logging
-from odoo import http
+from datetime import datetime
+from odoo import http, fields
 from odoo.http import request
 
 _logger = logging.getLogger(__name__)
@@ -73,10 +74,17 @@ class WahaWebhookController(http.Controller):
     
     def _handle_incoming_message(self, data):
         """
-        Handle incoming message webhook - delegates to waha.message.create_from_webhook
+        Handle incoming message webhook
+        
+        Creates waha.message from WAHA webhook payload.
+        Orchestrates the creation of message, chat, and partner records.
         """
         try:
+            payload = data.get('payload', {})
             session_name = data.get('session')
+            msg_uid = payload.get('id')
+            
+            _logger.info('=== Processing incoming message: %s ===', msg_uid)
             
             # Find account
             account = request.env['waha.account'].sudo().search([
@@ -87,13 +95,136 @@ class WahaWebhookController(http.Controller):
                 _logger.warning('No account found for session: %s', session_name)
                 return
             
-            # Delegate to waha.message.create_from_webhook (new refactored method)
-            message = request.env['waha.message'].sudo().create_from_webhook(data, account)
+            # Check if message already exists
+            existing = request.env['waha.message'].sudo().search([
+                ('msg_uid', '=', msg_uid),
+                ('wa_account_id', '=', account.id)
+            ], limit=1)
             
-            _logger.info('Incoming message processed: %s', message.id)
+            if existing:
+                _logger.info('Message already exists: %s', existing.id)
+                return
+            
+            # Extract message context
+            context = self._extract_message_context(payload)
+            
+            # Create waha.message with raw fields (relationships auto-computed)
+            vals = {
+                'msg_uid': context['msg_uid'],
+                'wa_account_id': account.id,
+                'message_type': 'outbound' if context['from_me'] else 'inbound',
+                'content_type': context['content_type'],
+                'state': 'sent' if context['from_me'] else 'received',
+                'body': context['body'],
+                'raw_chat_id': context['chat_id'],
+                'raw_sender_phone': context['sender_phone'],
+                'wa_timestamp': context['wa_timestamp'],
+                'raw_payload': payload,
+            }
+            
+            if context['participant']:
+                vals['participant_id'] = context['participant']
+            
+            message = request.env['waha.message'].sudo().create(vals)
+            _logger.info('Created waha.message: %s (relations auto-computed)', message.id)
+            
+            # Get auto-computed chat and partner
+            chat = message.waha_chat_id
+            partner = message.partner_id
+            
+            if not chat or not partner:
+                _logger.error('Failed to auto-compute chat or partner for message %s', message.id)
+                return
+            
+            # Create discuss.message in channel
+            discuss_channel = chat.get_or_create_discuss_channel()
+            message.create_discuss_message(discuss_channel, partner)
+            
+            # Process media attachments
+            if context['content_type'] != 'text':
+                message._process_media_from_payload(payload, context['content_type'])
+            
+            # Update chat metadata
+            chat.update_last_message(message.wa_timestamp)
+            
+            _logger.info('Successfully processed incoming message: %s', message.id)
             
         except Exception as e:
             _logger.exception('Error handling incoming message: %s', str(e))
+    
+    def _extract_message_context(self, payload):
+        """
+        Extract and normalize message context from WAHA payload
+        
+        Returns:
+            dict with parsed message information
+        """
+        # Extract basic info
+        from_raw = payload.get('from', '')
+        from_me = payload.get('fromMe', False)
+        participant = payload.get('participant', '')
+        
+        # Determine chat type
+        is_group = '@g.us' in from_raw
+        chat_id = from_raw
+        
+        # Extract sender phone
+        if is_group and participant:
+            sender_phone = participant.split('@')[0]
+        else:
+            sender_phone = from_raw.split('@')[0]
+        
+        # Extract content
+        body = payload.get('body', '')
+        if isinstance(body, dict):
+            body = body.get('text', '') or str(body)
+        elif not isinstance(body, str):
+            body = str(body) if body else ''
+        
+        # Detect content type
+        content_type = self._detect_content_type(payload)
+        
+        # Extract timestamp
+        timestamp_value = payload.get('timestamp')
+        wa_timestamp = None
+        if timestamp_value:
+            try:
+                wa_timestamp = datetime.fromtimestamp(int(timestamp_value))
+            except (ValueError, TypeError):
+                wa_timestamp = fields.Datetime.now()
+        
+        return {
+            'msg_uid': payload.get('id'),
+            'from_me': from_me,
+            'chat_id': chat_id,
+            'is_group': is_group,
+            'sender_phone': sender_phone,
+            'participant': participant,
+            'body': body,
+            'content_type': content_type,
+            'wa_timestamp': wa_timestamp or fields.Datetime.now(),
+        }
+    
+    def _detect_content_type(self, payload):
+        """Detect content type from WAHA payload"""
+        if payload.get('location'):
+            return 'location'
+        
+        if payload.get('hasMedia'):
+            msg_type = payload.get('type', 'text')
+            
+            type_mapping = {
+                'image': 'image',
+                'video': 'video',
+                'audio': 'audio',
+                'document': 'document',
+                'sticker': 'sticker',
+                'ptt': 'audio',  # Push-to-talk voice message
+            }
+            
+            return type_mapping.get(msg_type, 'document')
+        
+        return 'text'
     
     def _handle_message_ack(self, data):
         """
