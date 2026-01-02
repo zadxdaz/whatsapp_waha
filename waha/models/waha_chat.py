@@ -460,7 +460,7 @@ class WahaChat(models.Model):
         self.write({'unread_count': 0})
     
     def action_update_channel_name(self):
-        """Update discuss channel name and type based on chat type and partner"""
+        """Update discuss channel name based on chat type and partner"""
         self.ensure_one()
         
         if not self.discuss_channel_id:
@@ -472,19 +472,15 @@ class WahaChat(models.Model):
         else:
             new_name = self.name or self.wa_chat_id
         
-        # Update both name and channel_type to ensure it's in WhatsApp section
-        self.discuss_channel_id.write({
-            'name': new_name,
-            'channel_type': 'whatsapp',
-        })
-        _logger.info('Updated channel name to: %s and type to: whatsapp', new_name)
+        self.discuss_channel_id.write({'name': new_name})
+        _logger.info('Updated channel name to: %s', new_name)
         
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
                 'title': _('Channel Updated'),
-                'message': _('Channel moved to WhatsApp section with name: %s') % new_name,
+                'message': _('Channel name updated to: %s') % new_name,
                 'type': 'success',
                 'sticky': False,
             }
