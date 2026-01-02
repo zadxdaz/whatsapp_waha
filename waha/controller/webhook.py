@@ -126,19 +126,31 @@ class WahaWebhookController(http.Controller):
                 vals['participant_id'] = context['participant']
             
             message = request.env['waha.message'].sudo().create(vals)
-            _logger.info('Created waha.message: %s (relations auto-computed)', message.id)
+            _logger.info('Created waha.message: %s (type=%s, relations auto-computed)', 
+                        message.id, context['from_me'] and 'outbound' or 'inbound')
             
             # Get auto-computed chat and partner
             chat = message.waha_chat_id
             partner = message.partner_id
             
-            if not chat or not partner:
-                _logger.error('Failed to auto-compute chat or partner for message %s', message.id)
+            if not chat:
+                _logger.error('Failed to auto-compute chat for message %s', message.id)
                 return
             
-            # Create discuss.message in channel
-            discuss_channel = chat.get_or_create_discuss_channel()
-            message.create_discuss_message(discuss_channel, partner)
+            # Only create discuss.message for INBOUND messages
+            # Outbound messages already have mail_message_id from _compute_mail_message_id
+            if not context['from_me']:
+                if not partner:
+                    _logger.warning('No partner for inbound message %s', message.id)
+                
+                # Create discuss.message in channel (auto-computed)
+                discuss_channel = chat.discuss_channel_id
+                if discuss_channel and message.mail_message_id:
+                    _logger.info('Discuss message auto-created: %s', message.mail_message_id.id)
+                else:
+                    _logger.warning('Failed to auto-create discuss message for %s', message.id)
+            else:
+                _logger.info('Skipping discuss.message for outbound message (already exists)')
             
             # Process media attachments
             if context['content_type'] != 'text':
