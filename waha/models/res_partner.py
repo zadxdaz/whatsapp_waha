@@ -30,10 +30,9 @@ class ResPartner(models.Model):
     # Statistics
     waha_message_ids = fields.One2many(
         'waha.message',
-        'mobile_number',
+        'partner_id',
         string='WhatsApp Messages',
-        compute='_compute_waha_message_ids',
-        store=False
+        help='WhatsApp messages linked to this partner'
     )
     waha_messages_count = fields.Integer(
         'WhatsApp Messages',
@@ -49,24 +48,6 @@ class ResPartner(models.Model):
             self._update_whatsapp_channels()
         
         return result
-
-    @api.depends('mobile', 'phone')
-    def _compute_waha_message_ids(self):
-        """Compute related WhatsApp messages"""
-        for partner in self:
-            numbers = []
-            if partner.mobile:
-                numbers.append(partner.mobile)
-            if partner.phone:
-                numbers.append(partner.phone)
-            
-            if numbers:
-                messages = self.env['waha.message'].search([
-                    ('mobile_number', 'in', numbers)
-                ])
-                partner.waha_message_ids = messages
-            else:
-                partner.waha_message_ids = []
 
     def _update_whatsapp_channels(self):
         """Update discuss.channel names based on partner changes"""
@@ -101,18 +82,7 @@ class ResPartner(models.Model):
     def _compute_waha_messages_count(self):
         """Count WhatsApp messages"""
         for partner in self:
-            numbers = []
-            if partner.mobile:
-                numbers.append(partner.mobile)
-            if partner.phone:
-                numbers.append(partner.phone)
-            
-            if numbers:
-                partner.waha_messages_count = self.env['waha.message'].search_count([
-                    ('mobile_number', 'in', numbers)
-                ])
-            else:
-                partner.waha_messages_count = 0
+            partner.waha_messages_count = len(partner.waha_message_ids)
 
     def action_send_whatsapp_message(self):
         """Open WhatsApp composer"""

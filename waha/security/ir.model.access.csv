@@ -1,6 +1,10 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_waha_account_user,waha.account.user,model_waha_account,group_waha_user,1,0,0,0
 access_waha_account_admin,waha.account.admin,model_waha_account,group_waha_admin,1,1,1,1
+access_waha_chat_user,waha.chat.user,model_waha_chat,group_waha_user,1,1,1,0
+access_waha_chat_admin,waha.chat.admin,model_waha_chat,group_waha_admin,1,1,1,1
+access_waha_partner_user,waha.partner.user,model_waha_partner,group_waha_user,1,1,1,0
+access_waha_partner_admin,waha.partner.admin,model_waha_partner,group_waha_admin,1,1,1,1
 access_waha_message_user,waha.message.user,model_waha_message,group_waha_user,1,1,1,0
 access_waha_message_admin,waha.message.admin,model_waha_message,group_waha_admin,1,1,1,1
 access_waha_template_user,waha.template.user,model_waha_template,group_waha_user,1,0,0,0

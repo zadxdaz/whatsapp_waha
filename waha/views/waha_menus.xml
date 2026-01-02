@@ -6,6 +6,34 @@
               web_icon="waha,static/description/icon.png"
               sequence="85"/>
 
+    <!-- Chats Menu -->
+    <menuitem id="menu_waha_chat"
+              name="Chats"
+              parent="menu_waha_root"
+              action="action_waha_chat"
+              sequence="10"/>
+
+    <!-- Messages Menu -->
+    <menuitem id="menu_waha_message"
+              name="Messages"
+              parent="menu_waha_root"
+              action="action_waha_message"
+              sequence="20"/>
+
+    <!-- Contacts Menu -->
+    <menuitem id="menu_waha_partner"
+              name="Contacts"
+              parent="menu_waha_root"
+              action="action_waha_partner"
+              sequence="30"/>
+
+    <!-- Templates Menu -->
+    <menuitem id="menu_waha_template"
+              name="Templates"
+              parent="menu_waha_root"
+              action="action_waha_template"
+              sequence="40"/>
+
     <!-- Configuration Menu -->
     <menuitem id="menu_waha_config"
               name="Configuration"
@@ -18,18 +46,4 @@
               parent="menu_waha_config"
               action="action_waha_account"
               sequence="10"/>
-
-    <!-- Templates Menu -->
-    <menuitem id="menu_waha_template"
-              name="Templates"
-              parent="menu_waha_root"
-              action="action_waha_template"
-              sequence="20"/>
-
-    <!-- Messages Menu -->
-    <menuitem id="menu_waha_message"
-              name="Messages"
-              parent="menu_waha_root"
-              action="action_waha_message"
-              sequence="30"/>
 </odoo>

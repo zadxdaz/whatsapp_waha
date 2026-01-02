@@ -362,7 +362,14 @@ class WahaAccount(models.Model):
             raise UserError(_("Error disconnecting: %s") % str(e))
 
     def action_fetch_chats_and_messages(self):
-        """Fetch last 10 chats and last 100 messages from each chat, persist to DB"""
+        """
+        Fetch last 10 chats and last 100 messages from each chat, persist to DB
+        
+        Compatible with refactored architecture:
+        - Uses waha.chat.find_or_create() for chats
+        - Creates messages with raw_chat_id and raw_sender_phone
+        - Auto-compute handles all relationships automatically
+        """
         self.ensure_one()
         
         try:
@@ -399,10 +406,8 @@ class WahaAccount(models.Model):
             chats = sorted(chats, key=lambda x: x.get('timestamp', 0), reverse=True)[:10]
             
             # Counters
-            groups_created = 0
-            channels_created = 0
+            chats_created = 0
             messages_created = 0
-            partners_created = 0
             
             # Process each chat
             for idx, chat in enumerate(chats, 1):
@@ -415,25 +420,19 @@ class WahaAccount(models.Model):
                         chat_id = str(chat_id_obj)
                     
                     chat_name = chat.get('name', chat_id)
-                    is_group = chat.get('isGroup', False)
+                    is_group = '@g.us' in chat_id
                     
                     _logger.info('Processing chat %d/%d: %s (group=%s)', idx, len(chats), chat_name, is_group)
                     
-                    # Create group record if it's a group
-                    if is_group:
-                        existing_group = self.env['waha.group'].search([
-                            ('group_id', '=', chat_id),
-                            ('wa_account_id', '=', self.id),
-                        ], limit=1)
-                        
-                        if not existing_group:
-                            self.env['waha.group'].create({
-                                'name': chat_name,
-                                'group_id': chat_id,
-                                'wa_account_id': self.id,
-                                'active': True,
-                            })
-                            groups_created += 1
+                    # Use waha.chat.find_or_create (handles groups, channels, partners)
+                    waha_chat = self.env['waha.chat'].find_or_create(
+                        wa_account=self,
+                        chat_id=chat_id,
+                        partner=None  # Will auto-create if needed
+                    )
+                    
+                    if waha_chat:
+                        chats_created += 1
                     
                     # Get messages for this chat
                     messages_response = api.get_messages(chat_id, limit=100)
@@ -450,24 +449,95 @@ class WahaAccount(models.Model):
                     
                     # Sort messages by timestamp (oldest first) to maintain chronological order
                     messages = sorted(messages, key=lambda x: x.get('timestamp', 0))
-                    _logger.info('Sorted messages chronologically (oldest to newest)')
                     
                     # Process each message
                     for msg in messages:
                         try:
-                            # Use the new create_from_api_response method
-                            waha_msg = self.env['waha.message'].create_from_api_response(
-                                account=self,
-                                msg_data=msg,
-                                chat_id=chat_id
-                            )
+                            # Extract message data
+                            msg_id = msg.get('id', {})
+                            if isinstance(msg_id, dict):
+                                msg_uid = msg_id.get('id', '') or msg_id.get('_serialized', '')
+                            else:
+                                msg_uid = str(msg_id)
+                            
+                            # Skip if message already exists
+                            existing = self.env['waha.message'].search([
+                                ('msg_uid', '=', msg_uid),
+                                ('wa_account_id', '=', self.id)
+                            ], limit=1)
+                            
+                            if existing:
+                                continue
+                            
+                            # Extract sender info
+                            from_obj = msg.get('from', '') or msg.get('author', '')
+                            if isinstance(from_obj, dict):
+                                sender_id = from_obj.get('id', '') or from_obj.get('_serialized', '')
+                            else:
+                                sender_id = str(from_obj)
+                            
+                            # Normalize phone (remove @c.us, @g.us, etc)
+                            sender_phone = sender_id.replace('@c.us', '').replace('@lid', '').replace('@g.us', '')
+                            sender_phone = ''.join(filter(str.isdigit, sender_phone))
+                            
+                            # Extract message content
+                            body = msg.get('body', '') or msg.get('text', {}).get('body', '') or ''
+                            
+                            # Detect message type
+                            message_type = 'inbound'  # Sync is for received messages
+                            
+                            # Detect content type
+                            content_type = 'text'
+                            if msg.get('type'):
+                                msg_type = msg.get('type', '').lower()
+                                if msg_type in ['image', 'video', 'audio', 'document', 'sticker']:
+                                    content_type = msg_type
+                            
+                            # Extract timestamp
+                            timestamp = msg.get('timestamp')
+                            if timestamp:
+                                from datetime import datetime
+                                wa_timestamp = datetime.fromtimestamp(timestamp)
+                            else:
+                                wa_timestamp = fields.Datetime.now()
+                            
+                            # Create message with raw fields (auto-compute handles rest)
+                            vals = {
+                                'wa_account_id': self.id,
+                                'msg_uid': msg_uid,
+                                'message_type': message_type,
+                                'content_type': content_type,
+                                'state': 'received',
+                                'body': body or '(no content)',
+                                'raw_chat_id': chat_id,
+                                'raw_sender_phone': sender_phone,
+                                'wa_timestamp': wa_timestamp,
+                                'raw_payload': msg,
+                            }
+                            
+                            # Create message - auto-compute will handle:
+                            # 1. waha_chat_id
+                            # 2. partner_id
+                            # 3. mail_message_id (Discuss message)
+                            waha_msg = self.env['waha.message'].create(vals)
                             
                             if waha_msg:
                                 messages_created += 1
+                                
+                                # Process media if present
+                                if content_type != 'text' and msg:
+                                    try:
+                                        waha_msg._process_media_from_payload(msg, content_type)
+                                    except Exception as e:
+                                        _logger.warning('Failed to process media for %s: %s', msg_uid, str(e))
                             
                         except Exception as e:
                             _logger.warning('Failed to create message %s: %s', msg.get('id'), str(e))
                             continue
+                    
+                    # Update chat metadata
+                    if waha_chat:
+                        waha_chat.update_last_message()
                     
                 except Exception as e:
                     _logger.exception('Error processing chat %s: %s', chat_id, str(e))
@@ -477,14 +547,13 @@ class WahaAccount(models.Model):
             summary = []
             summary.append(f"✅ Sync Complete\n")
             summary.append(f"📊 Processed {len(chats)} chats")
-            summary.append(f"👥 Groups created: {groups_created}")
-            summary.append(f"💬 Channels created: {channels_created}")
-            summary.append(f"📱 Partners created: {partners_created}")
+            summary.append(f"💬 Chats created/updated: {chats_created}")
             summary.append(f"📨 Messages created: {messages_created}")
+            summary.append(f"\nNote: Partners, channels, and discuss messages created automatically via auto-compute")
             
             message = "\n".join(summary)
             
-            _logger.info('Sync complete: %d chats, %d messages created', len(chats), messages_created)
+            _logger.info('Sync complete: %d chats, %d messages created', chats_created, messages_created)
             
             return {
                 'type': 'ir.actions.client',

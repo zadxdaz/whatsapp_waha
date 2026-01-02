@@ -33,7 +33,10 @@
         'wizard/waha_composer_views.xml',
         
         # Views
+        'views/discuss_channel_views.xml',
         'views/waha_account_views.xml',
+        'views/waha_chat_views.xml',
+        'views/waha_partner_views.xml',
         'views/waha_message_views.xml',
         'views/waha_template_views.xml',
         'views/res_partner_views.xml',
@@ -44,15 +47,6 @@
     ],
     'external_dependencies': {
         'python': ['phonenumbers', 'requests'],
-    },
-    'assets': {
-        'web.assets_backend': [
-            'waha/static/src/scss/*.scss',
-            'waha/static/src/core/common/**/*',
-            'waha/static/src/core/web/**/*',
-            'waha/static/src/components/**/*',
-            'waha/static/src/views/**/*',
-        ],
     },
     'installable': True,
     'application': True,

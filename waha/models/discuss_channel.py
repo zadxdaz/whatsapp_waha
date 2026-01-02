@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from odoo import models, fields
+from odoo import models, fields, api
 
 
 class DiscussChannel(models.Model):
@@ -13,7 +13,6 @@ class DiscussChannel(models.Model):
     
     wa_chat_id = fields.Char(
         string='WhatsApp Chat ID',
-        unique=True,
         help='WAHA chat ID (e.g., 5491121928204@c.us or group@g.us)'
     )
     

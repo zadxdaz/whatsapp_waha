@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import json
 import logging
-from odoo import http
+from datetime import datetime
+from odoo import http, fields
 from odoo.http import request
 
 _logger = logging.getLogger(__name__)
@@ -73,10 +74,17 @@ class WahaWebhookController(http.Controller):
     
     def _handle_incoming_message(self, data):
         """
-        Handle incoming message webhook - delegates to waha.message.process_inbound_webhook
+        Handle incoming message webhook
+        
+        Creates waha.message from WAHA webhook payload.
+        Orchestrates the creation of message, chat, and partner records.
         """
         try:
+            payload = data.get('payload', {})
             session_name = data.get('session')
+            msg_uid = payload.get('id')
+            
+            _logger.info('=== Processing incoming message: %s ===', msg_uid)
             
             # Find account
             account = request.env['waha.account'].sudo().search([
@@ -87,13 +95,126 @@ class WahaWebhookController(http.Controller):
                 _logger.warning('No account found for session: %s', session_name)
                 return
             
-            # Delegate to waha.message.process_inbound_webhook
-            message = request.env['waha.message'].sudo().process_inbound_webhook(data, account)
+            # Check if message already exists
+            existing = request.env['waha.message'].sudo().search([
+                ('msg_uid', '=', msg_uid),
+                ('wa_account_id', '=', account.id)
+            ], limit=1)
             
-            _logger.info('Incoming message processed: %s', message.id)
+            if existing:
+                _logger.info('Message already exists: %s', existing.id)
+                return
+            
+            # Extract message context
+            context = self._extract_message_context(payload)
+            
+            # Create waha.message with raw fields (relationships auto-computed)
+            vals = {
+                'msg_uid': context['msg_uid'],
+                'wa_account_id': account.id,
+                'message_type': 'outbound' if context['from_me'] else 'inbound',
+                'state': 'sent' if context['from_me'] else 'received',
+                'body': context['body'],
+                'raw_chat_id': context['chat_id'],
+                'raw_sender_phone': context['sender_phone'],
+                'wa_timestamp': context['wa_timestamp'],
+                'raw_payload': payload,
+            }
+            
+            if context['participant']:
+                vals['participant_id'] = context['participant']
+            
+            message = request.env['waha.message'].sudo().create(vals)
+            _logger.info('Created waha.message: %s (type=%s, relations auto-computed)', 
+                        message.id, context['from_me'] and 'outbound' or 'inbound')
+            
+            # Get auto-computed chat and partner
+            chat = message.waha_chat_id
+            partner = message.partner_id
+            
+            _logger.info('Auto-computed relations: chat=%s, partner=%s, mail_message=%s', 
+                        chat.id if chat else None, 
+                        partner.id if partner else None,
+                        message.mail_message_id.id if message.mail_message_id else None)
+            
+            if not chat:
+                _logger.error('Failed to auto-compute chat for message %s', message.id)
+                return
+            
+            # Only create discuss.message for INBOUND messages
+            # Outbound messages already have mail_message_id from _compute_mail_message_id
+            if not context['from_me']:
+                if not partner:
+                    _logger.warning('No partner for inbound message %s', message.id)
+                
+                # Create discuss.message in channel (auto-computed)
+                discuss_channel = chat.discuss_channel_id
+                if discuss_channel and message.mail_message_id:
+                    _logger.info('Discuss message auto-created: %s', message.mail_message_id.id)
+                else:
+                    _logger.warning('Failed to auto-create discuss message for %s', message.id)
+            else:
+                _logger.info('Skipping discuss.message for outbound message (already exists)')
+            
+            # Process media attachments - now delegated to waha.message
+            message.process_payload_media()
+            
+            # Update chat metadata
+            chat.update_last_message(message.wa_timestamp)
+            
+            _logger.info('Successfully processed incoming message: %s', message.id)
             
         except Exception as e:
             _logger.exception('Error handling incoming message: %s', str(e))
+    
+    def _extract_message_context(self, payload):
+        """
+        Extract and normalize message context from WAHA payload
+        
+        Returns:
+            dict with parsed message information
+        """
+        # Extract basic info
+        from_raw = payload.get('from', '')
+        from_me = payload.get('fromMe', False)
+        participant = payload.get('participant', '')
+        
+        # Determine chat type
+        is_group = '@g.us' in from_raw
+        chat_id = from_raw
+        
+        # Extract sender phone
+        if is_group and participant:
+            sender_phone = participant.split('@')[0]
+        else:
+            sender_phone = from_raw.split('@')[0]
+        
+        # Extract content
+        body = payload.get('body', '')
+        if isinstance(body, dict):
+            body = body.get('text', '') or str(body)
+        elif not isinstance(body, str):
+            body = str(body) if body else ''
+        
+        # Extract timestamp
+        timestamp_value = payload.get('timestamp')
+        wa_timestamp = None
+        if timestamp_value:
+            try:
+                wa_timestamp = datetime.fromtimestamp(int(timestamp_value))
+            except (ValueError, TypeError):
+                wa_timestamp = fields.Datetime.now()
+        
+        return {
+            'msg_uid': payload.get('id'),
+            'from_me': from_me,
+            'chat_id': chat_id,
+            'is_group': is_group,
+            'sender_phone': sender_phone,
+            'participant': participant,
+            'body': body,
+            'wa_timestamp': wa_timestamp or fields.Datetime.now(),
+        }
     
     def _handle_message_ack(self, data):
         """
@@ -110,9 +231,12 @@ class WahaWebhookController(http.Controller):
         try:
             payload = data.get('payload', {})
             msg_uid = payload.get('id')
-            ack = payload.get('ack', 0)
             
-            # Find message
+            if not msg_uid:
+                _logger.warning('No message ID in ACK webhook')
+                return
+            
+            # Find message by msg_uid
             message = request.env['waha.message'].sudo().search([
                 ('msg_uid', '=', msg_uid)
             ], limit=1)
@@ -121,20 +245,8 @@ class WahaWebhookController(http.Controller):
                 _logger.warning('Message not found for ACK: %s', msg_uid)
                 return
             
-            # Update state based on ACK
-            state_mapping = {
-                0: 'error',
-                1: 'outgoing',
-                2: 'sent',
-                3: 'delivered',
-                4: 'read',
-                5: 'read',
-            }
-            
-            new_state = state_mapping.get(ack, message.state)
-            if new_state != message.state:
-                message.write({'state': new_state})
-                _logger.info('Message %s updated to state: %s', msg_uid, new_state)
+            # Delegate to waha.message.update_status_from_webhook
+            message.update_status_from_webhook(payload)
             
         except Exception as e:
             _logger.exception('Error handling message ACK: %s', str(e))
