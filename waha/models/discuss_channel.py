@@ -5,6 +5,12 @@ from odoo import models, fields, api
 class DiscussChannel(models.Model):
     _inherit = 'discuss.channel'
 
+    # Extend channel_type selection to add WhatsApp
+    channel_type = fields.Selection(
+        selection_add=[('whatsapp', 'WhatsApp')],
+        ondelete={'whatsapp': 'cascade'}
+    )
+
     is_whatsapp = fields.Boolean(
         string='Is WhatsApp Channel',
         default=False,
@@ -13,7 +19,6 @@ class DiscussChannel(models.Model):
     
     wa_chat_id = fields.Char(
         string='WhatsApp Chat ID',
-        unique=True,
         help='WAHA chat ID (e.g., 5491121928204@c.us or group@g.us)'
     )
     
@@ -30,10 +35,3 @@ class DiscussChannel(models.Model):
         help='WhatsApp account this channel belongs to',
         ondelete='set null'
     )
-    
-    @api.model
-    def _get_channel_types(self):
-        """Add WhatsApp as a channel type"""
-        types = super()._get_channel_types()
-        types.append(('whatsapp', 'WhatsApp'))
-        return types
