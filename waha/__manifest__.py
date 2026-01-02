@@ -34,6 +34,8 @@
         
         # Views
         'views/waha_account_views.xml',
+        'views/waha_chat_views.xml',
+        'views/waha_partner_views.xml',
         'views/waha_message_views.xml',
         'views/waha_template_views.xml',
         'views/res_partner_views.xml',

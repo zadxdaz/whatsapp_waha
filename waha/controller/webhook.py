@@ -73,7 +73,7 @@ class WahaWebhookController(http.Controller):
     
     def _handle_incoming_message(self, data):
         """
-        Handle incoming message webhook - delegates to waha.message.process_inbound_webhook
+        Handle incoming message webhook - delegates to waha.message.create_from_webhook
         """
         try:
             session_name = data.get('session')
@@ -87,8 +87,8 @@ class WahaWebhookController(http.Controller):
                 _logger.warning('No account found for session: %s', session_name)
                 return
             
-            # Delegate to waha.message.process_inbound_webhook
-            message = request.env['waha.message'].sudo().process_inbound_webhook(data, account)
+            # Delegate to waha.message.create_from_webhook (new refactored method)
+            message = request.env['waha.message'].sudo().create_from_webhook(data, account)
             
             _logger.info('Incoming message processed: %s', message.id)
             
@@ -110,9 +110,12 @@ class WahaWebhookController(http.Controller):
         try:
             payload = data.get('payload', {})
             msg_uid = payload.get('id')
-            ack = payload.get('ack', 0)
             
-            # Find message
+            if not msg_uid:
+                _logger.warning('No message ID in ACK webhook')
+                return
+            
+            # Find message by msg_uid
             message = request.env['waha.message'].sudo().search([
                 ('msg_uid', '=', msg_uid)
             ], limit=1)
@@ -121,20 +124,8 @@ class WahaWebhookController(http.Controller):
                 _logger.warning('Message not found for ACK: %s', msg_uid)
                 return
             
-            # Update state based on ACK
-            state_mapping = {
-                0: 'error',
-                1: 'outgoing',
-                2: 'sent',
-                3: 'delivered',
-                4: 'read',
-                5: 'read',
-            }
-            
-            new_state = state_mapping.get(ack, message.state)
-            if new_state != message.state:
-                message.write({'state': new_state})
-                _logger.info('Message %s updated to state: %s', msg_uid, new_state)
+            # Delegate to waha.message.update_status_from_webhook
+            message.update_status_from_webhook(payload)
             
         except Exception as e:
             _logger.exception('Error handling message ACK: %s', str(e))
