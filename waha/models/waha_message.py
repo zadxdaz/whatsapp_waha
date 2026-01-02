@@ -38,8 +38,11 @@ class WahaMessage(models.Model):
     # Core identification
     msg_uid = fields.Char(
         string="WhatsApp Message ID",
+        compute='_compute_msg_uid',
+        store=True,
+        readonly=False,
         index=True,
-        help="Unique message identifier from WAHA"
+        help="Unique message identifier from WAHA (auto-sent if missing)"
     )
     
     wa_account_id = fields.Many2one(
@@ -329,6 +332,110 @@ class WahaMessage(models.Model):
                     message.id, str(e)
                 )
                 message.mail_message_id = False
+    
+    @api.depends('waha_chat_id', 'partner_id', 'state', 'body', 'wa_account_id')
+    def _compute_msg_uid(self):
+        """
+        Auto-compute msg_uid by sending message through WAHA
+        
+        For outbound messages without msg_uid:
+        - Validates required fields
+        - Sends message through WAHA API
+        - Sets msg_uid from WAHA response
+        - Updates state to 'sent'
+        
+        For inbound messages or messages with msg_uid: keeps existing value
+        """
+        for message in self:
+            # Skip if already has msg_uid or is inbound
+            if message.msg_uid or message.message_type == 'inbound':
+                continue
+            
+            # Skip if not outgoing state
+            if message.state != 'outgoing':
+                continue
+            
+            # Need chat and account to send
+            if not message.waha_chat_id or not message.wa_account_id:
+                continue
+            
+            # Check account is connected
+            if message.wa_account_id.status != 'connected':
+                _logger.warning(
+                    'Cannot auto-send message %s: account not connected',
+                    message.id
+                )
+                continue
+            
+            # Auto-send through WAHA
+            _logger.info(
+                'Auto-sending message %s through WAHA (compute msg_uid)',
+                message.id
+            )
+            
+            try:
+                from odoo.addons.waha.tools.waha_api import WahaApi
+                api = WahaApi(message.wa_account_id)
+                
+                # Prepare message data
+                chat_wa_id = message.waha_chat_id.wa_chat_id
+                body_clean = re.sub(r'<[^>]+>', '', message.body or '').strip()
+                
+                if not body_clean and not message.attachment_ids:
+                    _logger.warning('Message %s has no body or attachments', message.id)
+                    continue
+                
+                # Send based on content type
+                result = None
+                
+                if message.content_type == 'text' or not message.attachment_ids:
+                    result = api.send_text(
+                        chat_wa_id,
+                        body_clean or '(empty)',
+                        message.reply_to_msg_uid
+                    )
+                else:
+                    # Handle media sending
+                    attachment = message.attachment_ids[0]
+                    result = api.send_file(
+                        chat_wa_id,
+                        attachment.datas,
+                        attachment.name,
+                        attachment.mimetype,
+                        body_clean
+                    )
+                
+                # Update with result
+                if result and result.get('id'):
+                    message.msg_uid = result.get('id')
+                    message.state = 'sent'
+                    message.sent_date = fields.Datetime.now()
+                    
+                    _logger.info(
+                        'Auto-sent message %s, got msg_uid: %s',
+                        message.id, message.msg_uid
+                    )
+                    
+                    # Update chat metadata
+                    if message.waha_chat_id:
+                        message.waha_chat_id.update_last_message()
+                
+            except Exception as e:
+                error_msg = str(e)
+                _logger.error('Failed to auto-send message %s: %s', message.id, error_msg)
+                
+                # Classify error
+                if 'No LID for user' in error_msg or 'not found' in error_msg.lower():
+                    failure_type = 'contact_not_found'
+                elif 'Invalid session' in error_msg or 'not connected' in error_msg.lower():
+                    failure_type = 'account'
+                else:
+                    failure_type = 'unknown'
+                
+                # Update state to error (but don't set msg_uid)
+                message.state = 'error'
+                message.failure_type = failure_type
+                message.failure_reason = error_msg
 
     # ============================================================
     # HELPER METHODS
@@ -513,38 +620,28 @@ class WahaMessage(models.Model):
                 'res_id': message.id,
             })
         
+        # Note: msg_uid will be computed automatically (auto-sends to WAHA)
         # Note: mail_message_id will be computed automatically
         # after waha_chat_id and partner_id are set
         
-        # Send through WAHA
-        try:
-            message._send_through_waha()
-            chat.update_last_message()
-            return message
-        except Exception as e:
-            # On failure: mark as error and delete discuss message
-            message.write({
-                'state': 'error',
-                'failure_type': 'unknown',
-                'failure_reason': str(e),
-            })
-            
-            if message.mail_message_id:
-                message.mail_message_id.unlink()
-            
-            raise
+        return message
     
     def _send_through_waha(self):
-        """Send this message through WAHA API"""
-        self.ensure_one()
+        """
+        Send this message through WAHA API (manual/retry)
         
-        if self.state != 'outgoing':
-            raise UserError(_('Only outgoing messages can be sent'))
+        Note: This is now mainly for manual retry actions.
+        Normal sending happens automatically via _compute_msg_uid.
+        
+        Returns:
+            str: msg_uid from WAHA response
+        """
+        self.ensure_one()
         
         if self.wa_account_id.status != 'connected':
             raise UserError(_('WhatsApp account is not connected'))
         
-        _logger.info('Sending message %s through WAHA', self.id)
+        _logger.info('Manually sending message %s through WAHA', self.id)
         
         try:
             from odoo.addons.waha.tools.waha_api import WahaApi
@@ -553,15 +650,6 @@ class WahaMessage(models.Model):
             # Prepare message data
             chat_wa_id = self.waha_chat_id.wa_chat_id
             body_clean = re.sub(r'<[^>]+>', '', self.body).strip()
-            
-            message_data = {
-                'chatId': chat_wa_id,
-                'text': body_clean,
-            }
-            
-            # Add reply_to if present
-            if self.reply_to_msg_uid:
-                message_data['reply_to'] = self.reply_to_msg_uid
             
             # Send based on content type
             if self.content_type == 'text':
@@ -582,14 +670,20 @@ class WahaMessage(models.Model):
                     result = api.send_text(chat_wa_id, body_clean, self.reply_to_msg_uid)
             
             # Update message with result
+            msg_uid = result.get('id', '')
             self.write({
                 'state': 'sent',
-                'msg_uid': result.get('id', ''),
+                'msg_uid': msg_uid,
                 'sent_date': fields.Datetime.now(),
             })
             
-            _logger.info('Message sent successfully: %s', result.get('id'))
-            return result
+            _logger.info('Message sent successfully: %s', msg_uid)
+            
+            # Update chat
+            if self.waha_chat_id:
+                self.waha_chat_id.update_last_message()
+            
+            return msg_uid
             
         except Exception as e:
             error_msg = str(e)
@@ -659,11 +753,14 @@ class WahaMessage(models.Model):
         """Retry sending failed messages"""
         for message in self:
             if message.state == 'error' and message.message_type == 'outbound':
-                message.write({'state': 'outgoing'})
-                try:
-                    message._send_through_waha()
-                except Exception as e:
-                    _logger.error('Retry failed for message %s: %s', message.id, str(e))
+                # Reset to outgoing to trigger auto-send via compute
+                message.write({
+                    'state': 'outgoing',
+                    'failure_type': False,
+                    'failure_reason': False,
+                })
+                # Force recomputation of msg_uid (will auto-send)
+                message._compute_msg_uid()
     
     def action_view_discuss_message(self):
         """Open linked discuss message"""
