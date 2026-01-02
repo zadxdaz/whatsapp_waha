@@ -1,7 +1,11 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+import base64
+import io
 import logging
 import re
+import subprocess
+import tempfile
 from datetime import datetime
 
 from odoo import models, fields, api, _
@@ -67,7 +71,7 @@ class WahaMessage(models.Model):
         ('document', 'Document'),
         ('sticker', 'Sticker'),
         ('location', 'Location'),
-    ], string="Content Type", default='text', required=True)
+    ], string="Content Type", compute='_compute_content_type', store=True, readonly=False, default='text')
     
     # Message state
     state = fields.Selection([
@@ -191,6 +195,21 @@ class WahaMessage(models.Model):
     # ============================================================
     # COMPUTED FIELDS - AUTO RELATIONSHIPS
     # ============================================================
+    
+    @api.depends('raw_payload')
+    def _compute_content_type(self):
+        """
+        Auto-detect content type from raw_payload
+        
+        Uses WAHA payload structure to determine if message contains
+        text, image, video, audio, document, sticker, or location.
+        """
+        for message in self:
+            if not message.raw_payload:
+                message.content_type = 'text'
+                continue
+            
+            message.content_type = message._detect_content_type(message.raw_payload)
     
     @api.depends('raw_chat_id', 'wa_account_id')
     def _compute_waha_chat_id(self):
@@ -319,6 +338,8 @@ class WahaMessage(models.Model):
                 
                 if message.wa_timestamp:
                     post_params['date'] = message.wa_timestamp
+                
+                _logger.info('message_post params: %s', post_params)
                 
                 # Create message (with flag to prevent recursion)
                 discuss_msg = discuss_channel.with_context(
@@ -471,40 +492,85 @@ class WahaMessage(models.Model):
     # MEDIA ATTACHMENTS
     # ============================================================
     
+    def process_payload_media(self):
+        """
+        Public method to process media from raw_payload
+        
+        Should be called after message creation when raw_payload contains media.
+        Automatically detects content type and creates attachments.
+        
+        Returns:
+            list: IDs of created attachments
+        """
+        self.ensure_one()
+        
+        if not self.raw_payload:
+            _logger.warning('No raw_payload to process media from')
+            return []
+        
+        # Auto-detect content type from payload
+        detected_type = self._detect_content_type(self.raw_payload)
+        
+        # Skip if no media
+        if detected_type == 'text':
+            return []
+        
+        # Process media
+        return self._process_media_from_payload(self.raw_payload, detected_type)
+    
     def _process_media_from_payload(self, payload, content_type):
         """
         Download and attach media from WAHA payload
         
+        Creates attachment and links it directly to the mail.message
+        
         Args:
             payload: WAHA payload with media info
             content_type: Type of media (image, video, etc.)
+            
+        Returns:
+            list: IDs of created attachments
         """
         self.ensure_one()
+        
+        if not self.mail_message_id:
+            _logger.warning('No mail_message_id to attach media to (waha.message=%s)', self.id)
+            return []
         
         media = payload.get('media', {})
         if not media:
             _logger.warning('No media in payload for %s', content_type)
-            return
+            return []
         
         # Get media data
         media_data = media.get('data')  # base64
         media_url = media.get('url')    # HTTP URL
         mimetype = media.get('mimetype') or self._get_default_mimetype(content_type)
-        filename = media.get('filename') or self._get_default_filename(content_type)
+        filename = media.get('filename') or self._get_default_filename(content_type, mimetype)
+        
+        # For videos and images, always use URL (base64 in _data.body is just thumbnail)
+        # For audio, prefer base64 if available (it's the full audio)
+        use_url_priority = content_type in ('image', 'video')
+        
+        # Check _data.body for base64 (WEBJS engine) only for audio
+        if not media_data and not use_url_priority:
+            _data = payload.get('_data', {})
+            media_data = _data.get('body')  # base64 from WEBJS
+            if media_data:
+                _logger.info('Using base64 from _data.body for content_type=%s', content_type)
         
         # Get binary data
         import base64
         import requests
+        import io
+        import subprocess
+        import tempfile
         
         media_binary = None
         
-        if media_data:
-            try:
-                media_binary = base64.b64decode(media_data)
-            except Exception as e:
-                _logger.error('Failed to decode base64 media: %s', str(e))
-        
-        elif media_url:
+        # For videos and images, prioritize URL download over base64 (base64 is just thumbnail)
+        if use_url_priority and media_url:
+            _logger.info('%s detected, downloading from URL instead of using base64 thumbnail', content_type.capitalize())
             try:
                 # Fix localhost URLs
                 if 'localhost' in media_url or '127.0.0.1' in media_url:
@@ -518,16 +584,67 @@ class WahaMessage(models.Model):
                 if self.wa_account_id.api_key:
                     headers['X-Api-Key'] = self.wa_account_id.api_key
                 
+                _logger.info('Downloading %s from URL: %s', content_type, media_url)
+                timeout = 60 if content_type == 'video' else 30
+                response = requests.get(media_url, headers=headers, timeout=timeout)
+                response.raise_for_status()
+                media_binary = response.content
+                _logger.info('Downloaded %s: %d bytes', content_type, len(media_binary))
+            except Exception as e:
+                _logger.error('Failed to download %s from URL: %s', content_type, str(e))
+        
+        # For non-video types, try base64 first
+        elif media_data and not media_binary:
+            try:
+                media_binary = base64.b64decode(media_data)
+                _logger.info('Decoded base64 media: %d bytes, mimetype=%s', len(media_binary), mimetype)
+            except Exception as e:
+                _logger.error('Failed to decode base64 media: %s', str(e))
+        
+        # Fallback to URL if base64 failed or not available
+        elif media_url and not media_binary:
+            try:
+                # Fix localhost URLs
+                if 'localhost' in media_url or '127.0.0.1' in media_url:
+                    media_url = media_url.replace(
+                        'http://localhost:3000',
+                        self.wa_account_id.waha_url.rstrip('/')
+                    )
+                
+                # Download with authentication
+                headers = {}
+                if self.wa_account_id.api_key:
+                    headers['X-Api-Key'] = self.wa_account_id.api_key
+                
+                _logger.info('Downloading from URL: %s', media_url)
                 response = requests.get(media_url, headers=headers, timeout=30)
                 response.raise_for_status()
                 media_binary = response.content
+                _logger.info('Downloaded: %d bytes', len(media_binary))
             except Exception as e:
                 _logger.error('Failed to download media from URL: %s', str(e))
+        
+        # Convert audio to MP3 if needed (for better browser compatibility)
+        if media_binary and mimetype and mimetype.startswith('audio/') and 'ogg' in mimetype.lower():
+            _logger.info('Converting audio from %s to MP3 for better compatibility', mimetype)
+            try:
+                media_binary = self._convert_audio_to_mp3(media_binary)
+                mimetype = 'audio/mpeg'
+                # Update filename extension
+                if filename.endswith('.ogg'):
+                    filename = filename[:-4] + '.mp3'
+                _logger.info('Audio converted to MP3 successfully: %d bytes', len(media_binary))
+            except Exception as e:
+                _logger.warning('Failed to convert audio to MP3, using original: %s', str(e))
         
         # Create attachment
         if media_binary:
             try:
-                attachment = self.env['ir.attachment'].sudo().create({
+                _logger.info('Creating attachment: name=%s, type=binary, mimetype=%s, size=%d bytes', 
+                            filename, mimetype, len(media_binary))
+                
+                # Create attachment linked to waha.message (for our records)
+                attachment_waha = self.env['ir.attachment'].sudo().create({
                     'name': filename,
                     'type': 'binary',
                     'datas': base64.b64encode(media_binary),
@@ -536,16 +653,37 @@ class WahaMessage(models.Model):
                     'res_id': self.id,
                 })
                 
-                # Also link to mail.message if available
+                _logger.info('Attachment created for waha.message: id=%s', attachment_waha.id)
+                
+                # Create a COPY for mail.message (for Discuss UI)
                 if self.mail_message_id:
-                    attachment.write({
+                    attachment_mail = self.env['ir.attachment'].sudo().create({
+                        'name': filename,
+                        'type': 'binary',
+                        'datas': base64.b64encode(media_binary),
+                        'mimetype': mimetype,
                         'res_model': 'mail.message',
                         'res_id': self.mail_message_id.id,
                     })
+                    _logger.info('Attachment created for mail.message: id=%s', attachment_mail.id)
+                    
+                    # Explicitly link attachment to mail.message.attachment_ids
+                    # This ensures Odoo Discuss renders it correctly
+                    self.mail_message_id.sudo().write({
+                        'attachment_ids': [(4, attachment_mail.id)]
+                    })
+                    _logger.info('Attachment %s linked to mail.message.attachment_ids', attachment_mail.id)
+                    
+                    return [attachment_waha.id, attachment_mail.id]
                 
                 _logger.info('Created attachment: %s (%s)', filename, content_type)
+                return [attachment_waha.id]
+                
             except Exception as e:
-                _logger.error('Failed to create attachment: %s', str(e))
+                _logger.error('Failed to create attachment: %s', str(e), exc_info=True)
+                return []
+        
+        return []
     
     def _get_default_mimetype(self, content_type):
         """Get default mimetype for content type"""
@@ -558,8 +696,125 @@ class WahaMessage(models.Model):
         }
         return defaults.get(content_type, 'application/octet-stream')
     
-    def _get_default_filename(self, content_type):
-        """Get default filename for content type"""
+    def _detect_content_type(self, payload):
+        """Detect content type from WAHA payload"""
+        if payload.get('location'):
+            return 'location'
+        
+        if payload.get('hasMedia'):
+            # Try to get type from payload.type or _data.type
+            msg_type = payload.get('type')
+            if not msg_type:
+                _data = payload.get('_data', {})
+                msg_type = _data.get('type', 'text')
+            
+            type_mapping = {
+                'image': 'image',
+                'video': 'video',
+                'audio': 'audio',
+                'document': 'document',
+                'sticker': 'sticker',
+                'ptt': 'audio',  # Push-to-talk voice message
+            }
+            
+            return type_mapping.get(msg_type, 'document')
+        
+        return 'text'
+    
+    def _convert_audio_to_mp3(self, audio_binary):
+        """
+        Convert audio file to MP3 format using ffmpeg
+        
+        Args:
+            audio_binary: bytes - Original audio file content
+            
+        Returns:
+            bytes - MP3 audio file content
+        """
+        try:
+            # Create temporary files for input and output
+            with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as input_file:
+                input_file.write(audio_binary)
+                input_path = input_file.name
+            
+            output_path = tempfile.mktemp(suffix='.mp3')
+            
+            try:
+                # Use ffmpeg to convert to MP3
+                # -y: overwrite output file without asking
+                # -i: input file
+                # -acodec libmp3lame: use MP3 codec
+                # -ab 128k: audio bitrate 128kbps (good quality for voice)
+                # -ar 44100: sample rate 44.1kHz
+                # -ac 1: mono channel (voice messages are mono)
+                cmd = [
+                    'ffmpeg',
+                    '-y',  # Overwrite output
+                    '-i', input_path,  # Input file
+                    '-acodec', 'libmp3lame',  # MP3 codec
+                    '-ab', '128k',  # Bitrate
+                    '-ar', '44100',  # Sample rate
+                    '-ac', '1',  # Mono
+                    output_path
+                ]
+                
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode != 0:
+                    _logger.error('ffmpeg conversion failed: %s', result.stderr)
+                    raise Exception(f'ffmpeg failed with code {result.returncode}')
+                
+                # Read the converted file
+                with open(output_path, 'rb') as f:
+                    mp3_binary = f.read()
+                
+                return mp3_binary
+                
+            finally:
+                # Clean up temporary files
+                import os
+                try:
+                    os.unlink(input_path)
+                except:
+                    pass
+                try:
+                    os.unlink(output_path)
+                except:
+                    pass
+                    
+        except Exception as e:
+            _logger.error('Error converting audio to MP3: %s', str(e))
+            raise
+    
+    def _get_default_filename(self, content_type, mimetype=None):
+        """Get default filename for content type based on mimetype"""
+        # Try to infer extension from mimetype
+        if mimetype:
+            ext_mapping = {
+                'image/jpeg': '.jpg',
+                'image/jpg': '.jpg',
+                'image/png': '.png',
+                'image/gif': '.gif',
+                'image/webp': '.webp',
+                'video/mp4': '.mp4',
+                'video/webm': '.webm',
+                'audio/ogg': '.ogg',
+                'audio/mpeg': '.mp3',
+                'audio/mp3': '.mp3',
+                'application/pdf': '.pdf',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+            }
+            ext = ext_mapping.get(mimetype)
+            if ext:
+                return f'{content_type}{ext}'
+        
+        # Fallback to defaults
         defaults = {
             'image': 'image.jpg',
             'video': 'video.mp4',

@@ -74,7 +74,7 @@
                                 </group>
                             </group>
                             <group string="Raw Payload">
-                                <field name="raw_payload" nolabel="1" widget="ace" options="{'mode': 'json'}"/>
+                                <field name="raw_payload" nolabel="1" widget="code_editor"/>
                             </group>
                         </page>
                     </notebook>
@@ -93,6 +93,7 @@
                 <field name="wa_account_id"/>
                 <field name="partner_id"/>
                 <field name="waha_chat_id" optional="hide"/>
+                <field name="mail_message_id" optional="show"/>
                 <field name="message_type" widget="badge"/>
                 <field name="content_type" widget="badge" optional="hide"/>
                 <field name="body"/>

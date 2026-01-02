@@ -113,7 +113,6 @@ class WahaWebhookController(http.Controller):
                 'msg_uid': context['msg_uid'],
                 'wa_account_id': account.id,
                 'message_type': 'outbound' if context['from_me'] else 'inbound',
-                'content_type': context['content_type'],
                 'state': 'sent' if context['from_me'] else 'received',
                 'body': context['body'],
                 'raw_chat_id': context['chat_id'],
@@ -132,6 +131,11 @@ class WahaWebhookController(http.Controller):
             # Get auto-computed chat and partner
             chat = message.waha_chat_id
             partner = message.partner_id
+            
+            _logger.info('Auto-computed relations: chat=%s, partner=%s, mail_message=%s', 
+                        chat.id if chat else None, 
+                        partner.id if partner else None,
+                        message.mail_message_id.id if message.mail_message_id else None)
             
             if not chat:
                 _logger.error('Failed to auto-compute chat for message %s', message.id)
@@ -152,9 +156,8 @@ class WahaWebhookController(http.Controller):
             else:
                 _logger.info('Skipping discuss.message for outbound message (already exists)')
             
-            # Process media attachments
-            if context['content_type'] != 'text':
-                message._process_media_from_payload(payload, context['content_type'])
+            # Process media attachments - now delegated to waha.message
+            message.process_payload_media()
             
             # Update chat metadata
             chat.update_last_message(message.wa_timestamp)
@@ -193,9 +196,6 @@ class WahaWebhookController(http.Controller):
         elif not isinstance(body, str):
             body = str(body) if body else ''
         
-        # Detect content type
-        content_type = self._detect_content_type(payload)
-        
         # Extract timestamp
         timestamp_value = payload.get('timestamp')
         wa_timestamp = None
@@ -213,30 +213,8 @@ class WahaWebhookController(http.Controller):
             'sender_phone': sender_phone,
             'participant': participant,
             'body': body,
-            'content_type': content_type,
             'wa_timestamp': wa_timestamp or fields.Datetime.now(),
         }
-    
-    def _detect_content_type(self, payload):
-        """Detect content type from WAHA payload"""
-        if payload.get('location'):
-            return 'location'
-        
-        if payload.get('hasMedia'):
-            msg_type = payload.get('type', 'text')
-            
-            type_mapping = {
-                'image': 'image',
-                'video': 'video',
-                'audio': 'audio',
-                'document': 'document',
-                'sticker': 'sticker',
-                'ptt': 'audio',  # Push-to-talk voice message
-            }
-            
-            return type_mapping.get(msg_type, 'document')
-        
-        return 'text'
     
     def _handle_message_ack(self, data):
         """
