@@ -108,6 +108,14 @@ class WahaWebhookController(http.Controller):
             # Extract message context
             context = self._extract_message_context(payload)
             
+            # Validate payload for raw_payload
+            if not payload or not isinstance(payload, dict):
+                _logger.error('Invalid payload for message %s: type=%s, value=%s', 
+                            context['msg_uid'], type(payload).__name__, payload)
+                valid_payload = {}
+            else:
+                valid_payload = payload
+            
             # Create waha.message with raw fields (relationships auto-computed)
             vals = {
                 'msg_uid': context['msg_uid'],
@@ -116,13 +124,31 @@ class WahaWebhookController(http.Controller):
                 'state': 'sent' if context['from_me'] else 'received',
                 'body': context['body'],
                 'raw_chat_id': context['chat_id'],
+                'raw_sender_lid': context['sender_lid'],
                 'raw_sender_phone': context['sender_phone'],
                 'wa_timestamp': context['wa_timestamp'],
-                'raw_payload': payload,
+                'raw_payload': valid_payload,
             }
             
             if context['participant']:
                 vals['participant_id'] = context['participant']
+            
+            # Handle reply_to from quoted message
+            if context.get('reply_to_stanza_id'):
+                # Search for any message containing this stanzaID
+                stanza_id = context['reply_to_stanza_id']
+                
+                original_msg = request.env['waha.message'].sudo().search([
+                    ('msg_uid', 'ilike', stanza_id),
+                    ('wa_account_id', '=', account.id)
+                ], limit=1)
+                
+                if original_msg:
+                    vals['reply_to_message_id'] = original_msg.id
+                    vals['reply_to_msg_uid'] = original_msg.msg_uid
+                    _logger.info('Message is reply to stanzaID %s (found msg: %s)', stanza_id, original_msg.id)
+                else:
+                    _logger.warning('Reply to message with stanzaID %s not found', stanza_id)
             
             message = request.env['waha.message'].sudo().create(vals)
             _logger.info('Created waha.message: %s (type=%s, relations auto-computed)', 
@@ -179,15 +205,33 @@ class WahaWebhookController(http.Controller):
         from_me = payload.get('fromMe', False)
         participant = payload.get('participant', '')
         
+        _logger.info('Extracting context: from=%s, fromMe=%s, participant=%s', from_raw, from_me, participant)
+        
         # Determine chat type
         is_group = '@g.us' in from_raw
         chat_id = from_raw
         
-        # Extract sender phone
-        if is_group and participant:
-            sender_phone = participant.split('@')[0]
+        # Extract sender ID (could be LID or phone)
+        sender_raw = participant if (is_group and participant) else from_raw
+        
+        _logger.info('Sender raw: %s (is_group=%s)', sender_raw, is_group)
+        
+        # Determine if it's a LID or phone number
+        sender_lid = None
+        sender_phone = None
+        
+        if '@lid' in sender_raw:
+            # It's a LID
+            sender_lid = sender_raw.split('@')[0]
+            _logger.info('Extracted LID: %s', sender_lid)
+        elif '@c.us' in sender_raw:
+            # It's a phone number
+            sender_phone = sender_raw.split('@')[0]
+            _logger.info('Extracted phone: %s', sender_phone)
         else:
-            sender_phone = from_raw.split('@')[0]
+            # Fallback - treat as phone
+            sender_phone = sender_raw.split('@')[0] if '@' in sender_raw else sender_raw
+            _logger.info('Fallback phone: %s', sender_phone)
         
         # Extract content
         body = payload.get('body', '')
@@ -205,15 +249,26 @@ class WahaWebhookController(http.Controller):
             except (ValueError, TypeError):
                 wa_timestamp = fields.Datetime.now()
         
+        # Extract reply_to (quoted message)
+        reply_to_stanza_id = None
+        _data = payload.get('_data', {})
+        quoted_stanza_id = _data.get('quotedStanzaID')
+        
+        if quoted_stanza_id:
+            reply_to_stanza_id = quoted_stanza_id
+            _logger.info('Detected reply to message stanzaID: %s', quoted_stanza_id)
+        
         return {
             'msg_uid': payload.get('id'),
             'from_me': from_me,
             'chat_id': chat_id,
             'is_group': is_group,
+            'sender_lid': sender_lid,
             'sender_phone': sender_phone,
             'participant': participant,
             'body': body,
             'wa_timestamp': wa_timestamp or fields.Datetime.now(),
+            'reply_to_stanza_id': reply_to_stanza_id,
         }
     
     def _handle_message_ack(self, data):

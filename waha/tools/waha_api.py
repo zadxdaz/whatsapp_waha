@@ -182,27 +182,39 @@ class WahaApi:
         }
         
         # Add reply_to if provided - this helps establish context in the chat
-        #if reply_to:
-        #    data['reply_to'] = reply_to
-        #    _logger.debug('Replying to message: %s', reply_to)
+        if reply_to:
+            data['reply_to'] = reply_to
+            _logger.debug('Replying to message: %s', reply_to)
         
         _logger.info("data: %s", data)
         
         result = self._make_request('POST', '/api/sendText', data=data)
+        
+        # Normalize msg_uid from WAHA response
+        # WAHA returns: {'id': {'_serialized': 'true_xxx@c.us_YYY', ...}, ...}
+        msg_id = result.get('id', {})
+        if isinstance(msg_id, dict):
+            result['id'] = msg_id.get('_serialized') or msg_id.get('id', '')
+        
         _logger.info('=== WAHA API send_text() Response ===')
-        _logger.info('Message ID: %s', result.get('message_id', result.get('id', 'N/A')))
+        _logger.info('Message ID: %s', result.get('id'))
         _logger.debug('Full response: %s', result)
         
         return result
 
-    def send_image(self, chat_id, image_data, caption=None):
+    def send_image(self, chat_id, image_data, caption=None, filename=None, reply_to=None):
         """
         Send image message
         
         Args:
-            chat_id: WhatsApp chat ID
-            image_data: Base64 encoded image data
-            caption: Optional caption
+            chat_id: WhatsApp chat ID (e.g., 123456@c.us)
+            image_data: Base64 encoded image data (without data:image/jpeg;base64, prefix)
+            caption: Optional caption text
+            filename: Optional filename (e.g., 'photo.jpg')
+            reply_to: Optional message ID to reply to
+        
+        Returns:
+            dict with message info including 'id'
         """
         data = {
             'session': self.session_name,
@@ -212,22 +224,43 @@ class WahaApi:
                 'data': image_data
             }
         }
+        
+        if filename:
+            data['file']['filename'] = filename
+        
         if caption:
             data['caption'] = caption
         
-        return self._make_request('POST', '/api/sendImage', data=data)
+        if reply_to:
+            data['reply_to'] = reply_to
+        
+        _logger.info('Sending image to chat %s (caption: %s, reply_to: %s)', chat_id, bool(caption), reply_to)
+        result = self._make_request('POST', '/api/sendImage', data=data)
+        
+        # Normalize msg_uid
+        msg_id = result.get('id', {})
+        if isinstance(msg_id, dict):
+            result['id'] = msg_id.get('_serialized') or msg_id.get('id', '')
+        
+        _logger.info('Image sent successfully, message ID: %s', result.get('id'))
+        return result
 
-    def send_file(self, chat_id, file_data, filename, mimetype):
+    def send_file(self, chat_id, file_data, filename, mimetype, caption=None, reply_to=None):
         """
         Send file/document message
         
         Args:
-            chat_id: WhatsApp chat ID
-            file_data: Base64 encoded file data
-            filename: File name
-            mimetype: MIME type
+            chat_id: WhatsApp chat ID (e.g., 123456@c.us)
+            file_data: Base64 encoded file data (without data:...;base64, prefix)
+            filename: File name (e.g., 'document.pdf')
+            mimetype: MIME type (e.g., 'application/pdf')
+            caption: Optional caption text
+            reply_to: Optional message ID to reply to
+        
+        Returns:
+            dict with message info including 'id'
         """
-        return self._make_request('POST', '/api/sendFile', data={
+        data = {
             'session': self.session_name,
             'chatId': chat_id,
             'file': {
@@ -235,33 +268,112 @@ class WahaApi:
                 'mimetype': mimetype,
                 'data': file_data
             }
-        })
+        }
+        
+        if caption:
+            data['caption'] = caption
+        
+        if reply_to:
+            data['reply_to'] = reply_to
+        
+        _logger.info('Sending file to chat %s (filename: %s, mimetype: %s, reply_to: %s)', 
+                    chat_id, filename, mimetype, reply_to)
+        result = self._make_request('POST', '/api/sendFile', data=data)
+        
+        # Normalize msg_uid
+        msg_id = result.get('id', {})
+        if isinstance(msg_id, dict):
+            result['id'] = msg_id.get('_serialized') or msg_id.get('id', '')
+        
+        _logger.info('File sent successfully, message ID: %s', result.get('id'))
+        return result
 
-    def send_video(self, chat_id, video_data, caption=None):
-        """Send video message"""
+    def send_video(self, chat_id, video_data, caption=None, convert=False, reply_to=None):
+        """
+        Send video message
+        
+        Args:
+            chat_id: WhatsApp chat ID (e.g., 123456@c.us)
+            video_data: Base64 encoded video data
+            caption: Optional caption text
+            convert: Whether to convert video to mp4 format (default: False)
+            reply_to: Optional message ID to reply to
+        
+        Returns:
+            dict with message info including 'id'
+        """
         data = {
             'session': self.session_name,
             'chatId': chat_id,
             'file': {
                 'mimetype': 'video/mp4',
                 'data': video_data
-            }
+            },
+            'convert': convert
         }
+        
         if caption:
             data['caption'] = caption
         
-        return self._make_request('POST', '/api/sendVideo', data=data)
+        if reply_to:
+            data['reply_to'] = reply_to
+        
+        _logger.info('Sending video to chat %s (caption: %s, convert: %s, reply_to: %s)', 
+                    chat_id, bool(caption), convert, reply_to)
+        result = self._make_request('POST', '/api/sendVideo', data=data)
+        
+        # Normalize msg_uid
+        msg_id = result.get('id', {})
+        if isinstance(msg_id, dict):
+            result['id'] = msg_id.get('_serialized') or msg_id.get('id', '')
+        
+        _logger.info('Video sent successfully, message ID: %s', result.get('id'))
+        return result
 
-    def send_audio(self, chat_id, audio_data):
-        """Send audio message"""
-        return self._make_request('POST', '/api/sendAudio', data={
+    def send_voice(self, chat_id, voice_data, convert=False, reply_to=None):
+        """
+        Send voice/audio message
+        
+        Args:
+            chat_id: WhatsApp chat ID (e.g., 123456@c.us)
+            voice_data: Base64 encoded audio data
+            convert: Whether to convert audio to opus format (default: False)
+            reply_to: Optional message ID to reply to
+        
+        Returns:
+            dict with message info including 'id'
+        """
+        data = {
             'session': self.session_name,
             'chatId': chat_id,
             'file': {
-                'mimetype': 'audio/ogg',
-                'data': audio_data
-            }
-        })
+                'mimetype': 'audio/ogg; codecs=opus',
+                'data': voice_data
+            },
+            'convert': convert
+        }
+        
+        if reply_to:
+            data['reply_to'] = reply_to
+        
+        _logger.info('Sending voice to chat %s (convert: %s, reply_to: %s)', chat_id, convert, reply_to)
+        result = self._make_request('POST', '/api/sendVoice', data=data)
+        
+        # Normalize msg_uid
+        msg_id = result.get('id', {})
+        if isinstance(msg_id, dict):
+            result['id'] = msg_id.get('_serialized') or msg_id.get('id', '')
+        
+        _logger.info('Voice sent successfully, message ID: %s', result.get('id'))
+        return result
+
+    def send_audio(self, chat_id, audio_data):
+        """
+        Deprecated: Use send_voice() instead
+        Send audio message
+        """
+        _logger.warning('send_audio() is deprecated, use send_voice() instead')
+        return self.send_voice(chat_id, audio_data, convert=True)
 
     def send_location(self, chat_id, latitude, longitude, title=None):
         """Send location message"""
@@ -307,14 +419,22 @@ class WahaApi:
         """Get a specific contact by phone number
         
         Args:
-            phone_number: Phone number (with or without country code)
+            phone_number: Phone number (with or without country code, with or without @c.us/@lid suffix)
         
         Returns:
             Contact information dict or None if not found
         """
         try:
-            # Normalize phone to WhatsApp format (e.g., 1234567890@c.us)
+            # Clean and normalize phone - remove any existing suffixes
             normalized_phone = str(phone_number).replace('+', '').replace(' ', '')
+            
+            # Remove @c.us, @lid, @g.us if present
+            for suffix in ['@c.us', '@lid', '@g.us']:
+                if normalized_phone.endswith(suffix):
+                    normalized_phone = normalized_phone.replace(suffix, '')
+                    break
+            
+            _logger.info('Getting contact for: %s (normalized: %s)', phone_number, normalized_phone)
             
             # Try different WhatsApp ID formats
             contact_ids = [
@@ -346,8 +466,6 @@ class WahaApi:
             return None
             
         except Exception as e:
-            import logging
-            _logger = logging.getLogger(__name__)
             _logger.warning('Could not get contact from WAHA (non-critical): %s', str(e))
             return None
 
@@ -408,3 +526,45 @@ class WahaApi:
         """Get messages from a chat"""
         # WAHA requires session name in the URL path
         return self._make_request('GET', f'/api/{self.session_name}/chats/{chat_id}/messages?limit={limit}')
+    
+    def get_phone_by_lid(self, lid):
+        """
+        Get phone number from LID (Long ID)
+        
+        Args:
+            lid: WhatsApp LID (e.g., 123123%40lid)
+        
+        Returns:
+            dict with 'lid' and 'pn' (phone number) or None
+        """
+        try:
+            # Endpoint: GET /api/{session}/lids/{lid}
+            result = self._make_request(
+                'GET',
+                f'/api/{self.session_name}/lids/{lid}'
+            )
+            return result if result else None
+        except Exception as e:
+            _logger.debug('Could not get phone for LID %s: %s', lid, str(e))
+            return None
+    
+    def get_lid_by_phone(self, phone_number):
+        """
+        Get LID (Long ID) from phone number
+        
+        Args:
+            phone_number: Phone number (e.g., 123123)
+        
+        Returns:
+            dict with 'lid' and 'pn' (phone number) or None
+        """
+        try:
+            # Endpoint: GET /api/{session}/lids/pn/{phoneNumber}
+            result = self._make_request(
+                'GET',
+                f'/api/{self.session_name}/lids/pn/{phone_number}'
+            )
+            return result if result else None
+        except Exception as e:
+            _logger.debug('Could not get LID for phone %s: %s', phone_number, str(e))
+            return None

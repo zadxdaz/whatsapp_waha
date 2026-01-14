@@ -24,14 +24,21 @@
         <field name="arch" type="xml">
             <form string="WhatsApp Chat">
                 <header>
-                    <button name="sync_group_info_from_waha" 
-                            string="Sync from WhatsApp" 
+                    <button name="sync_group_participants_from_waha" 
+                            string="Sync Participants" 
                             type="object"
-                            invisible="chat_type != 'group'"/>
+                            class="btn-primary"
+                            invisible="chat_type != 'group'"
+                            help="Fetch and sync all group participants from WhatsApp"/>
+                    <button name="sync_group_info_from_waha" 
+                            string="Sync Group Info" 
+                            type="object"
+                            invisible="chat_type != 'group'"
+                            help="Sync group name, description, and participants from WhatsApp"/>
                     <button name="action_update_channel_name" 
                             string="Update Channel Name" 
                             type="object"
-                            class="btn-primary"/>
+                            class="btn-secondary"/>
                     <button name="mark_as_read" 
                             string="Mark as Read" 
                             type="object"

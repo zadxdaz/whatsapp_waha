@@ -101,18 +101,39 @@ class WahaComposer(models.TransientModel):
         import re
         clean_body = re.sub(r'<[^>]+>', '', (self.preview_body or self.body)).strip()
         
-        # Prepare message data
+        # Normalize phone number
+        normalized_phone = self.mobile_number.replace('+', '').replace(' ', '').replace('-', '')
+        
+        # Find or create chat
+        chat_id = f"{normalized_phone}@c.us"
+        chat = self.env['waha.chat'].find_or_create(
+            wa_account=self.wa_account_id,
+            chat_id=chat_id,
+            partner=None
+        )
+        
+        # Find or create partner
+        partner = self.env['waha.partner'].find_or_create_by_lid_or_phone(
+            lid=None,
+            phone=normalized_phone,
+            wa_account=self.wa_account_id,
+            auto_enrich=True
+        )
+        
+        # Prepare message data using new structure
         message_vals = {
             'wa_account_id': self.wa_account_id.id,
-            'mobile_number': self.mobile_number,
+            'raw_chat_id': chat_id,
+            'raw_sender_phone': normalized_phone,
             'body': clean_body,
             'message_type': 'outbound',
+            'state': 'outgoing',
         }
         
         if self.wa_template_id:
             message_vals['wa_template_id'] = self.wa_template_id.id
         
-        # Create message
+        # Create message (auto-computes waha_chat_id, partner_id, mail_message_id)
         message = self.env['waha.message'].create(message_vals)
         
         # Link to mail.message if we have a related record
@@ -131,48 +152,52 @@ class WahaComposer(models.TransientModel):
         
         # Handle attachments
         if self.attachment_ids:
-            for attachment in self.attachment_ids:
-                # Send file message for each attachment
-                try:
-                    message.wa_account_id._send_waha_message(
-                        self.mobile_number,
-                        body=self.preview_body or self.body,
-                        attachment=attachment
-                    )
-                except Exception as e:
-                    message.write({
-                        'state': 'error',
-                        'failure_reason': str(e)
-                    })
-        
-        # Send message
-        try:
-            message.action_send()
+            # Link attachments to message
+            self.attachment_ids.write({
+                'res_model': 'waha.message',
+                'res_id': message.id,
+            })
             
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'title': _('Success'),
-                    'message': _('WhatsApp message sent successfully'),
-                    'type': 'success',
-                    'sticky': False,
-                }
+            # Update content type if has attachments
+            message.content_type = 'document'
+        
+        # Note: Message will be auto-sent via _compute_msg_uid
+        # because state is 'outgoing' and all required fields are set
+        
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': _('Success'),
+                'message': _('WhatsApp message queued for sending'),
+                'type': 'success',
+                'sticky': False,
             }
-        except Exception as e:
-            raise ValidationError(_('Failed to send message: %s') % str(e))
+        }
 
     def action_schedule_message(self):
         """Schedule message to be sent later"""
         self.ensure_one()
         
-        # Create message in outgoing state
+        # Normalize phone number
+        normalized_phone = self.mobile_number.replace('+', '').replace(' ', '').replace('-', '')
+        
+        # Find or create chat
+        chat_id = f"{normalized_phone}@c.us"
+        chat = self.env['waha.chat'].find_or_create(
+            wa_account=self.wa_account_id,
+            chat_id=chat_id,
+            partner=None
+        )
+        
+        # Create message in draft state (won't auto-send)
         message_vals = {
             'wa_account_id': self.wa_account_id.id,
-            'mobile_number': self.mobile_number,
+            'raw_chat_id': chat_id,
+            'raw_sender_phone': normalized_phone,
             'body': self.preview_body or self.body,
             'message_type': 'outbound',
-            'state': 'outgoing',
+            'state': 'draft',  # Draft state prevents auto-send
         }
         
         if self.wa_template_id:

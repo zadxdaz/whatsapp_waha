@@ -57,6 +57,9 @@ class MailThread(models.AbstractModel):
                 # Get message body
                 message_body = kwargs.get('body', '')
                 
+                # Get attachments from the message_post
+                attachment_ids = kwargs.get('attachment_ids', [])
+                
                 # Get waha.chat for this channel
                 waha_chat = self.env['waha.chat'].sudo().search([
                     ('discuss_channel_id', '=', self.id)
@@ -80,23 +83,81 @@ class MailThread(models.AbstractModel):
                     if sender_phone:
                         sender_phone = sender_phone.replace('+', '').replace(' ', '').replace('-', '')
                     
+                    # Determine content type based on attachments
+                    content_type = 'text'
+                    if attachment_ids:
+                        # Get first attachment to determine type
+                        first_attachment = self.env['ir.attachment'].browse(attachment_ids[0][1] if isinstance(attachment_ids[0], tuple) else attachment_ids[0])
+                        if first_attachment.exists():
+                            if first_attachment.mimetype and first_attachment.mimetype.startswith('image/'):
+                                content_type = 'image'
+                            elif first_attachment.mimetype and first_attachment.mimetype.startswith('video/'):
+                                content_type = 'video'
+                            elif first_attachment.mimetype and first_attachment.mimetype.startswith('audio/'):
+                                content_type = 'audio'
+                            else:
+                                content_type = 'document'
+                    
+                    # Get reply_to if this is a reply to another message
+                    reply_to_msg_uid = None
+                    parent_id = kwargs.get('parent_id')
+                    if parent_id:
+                        # Find the waha.message linked to this mail.message
+                        parent_waha_message = self.env['waha.message'].sudo().search([
+                            ('mail_message_id', '=', parent_id)
+                        ], limit=1)
+                        
+                        if parent_waha_message and parent_waha_message.msg_uid:
+                            reply_to_msg_uid = parent_waha_message.msg_uid
+                            _logger.info('Reply to message detected: parent_id=%s, msg_uid=%s', parent_id, reply_to_msg_uid)
+                    
                     # Create waha.message with mail_message_id to prevent duplication
                     # Auto-send will happen via _compute_msg_uid
-                    waha_message = self.env['waha.message'].sudo().create({
+                    waha_message_vals = {
                         'wa_account_id': wa_account.id,
                         'message_type': 'outbound',
-                        'content_type': 'text',
+                        'content_type': content_type,
                         'state': 'outgoing',
                         'body': message_body,
                         'raw_chat_id': waha_chat.wa_chat_id,
                         'raw_sender_phone': sender_phone,
                         'mail_message_id': result if isinstance(result, int) else False,
-                    })
+                        'reply_to_msg_uid': reply_to_msg_uid,
+                    }
+                    
+                    waha_message = self.env['waha.message'].sudo().create(waha_message_vals)
+                    
+                    # Link attachments to waha.message
+                    if attachment_ids:
+                        _logger.info('Processing %d attachments for waha.message %s', len(attachment_ids), waha_message.id)
+                        
+                        # Handle different formats of attachment_ids
+                        # Can be: [(6, 0, [1,2,3])], [(4, 1), (4, 2)], or [1, 2, 3]
+                        attachment_records = self.env['ir.attachment']
+                        
+                        for att_cmd in attachment_ids:
+                            if isinstance(att_cmd, (list, tuple)):
+                                if att_cmd[0] == 6:  # (6, 0, [ids])
+                                    attachment_records |= self.env['ir.attachment'].browse(att_cmd[2])
+                                elif att_cmd[0] == 4:  # (4, id)
+                                    attachment_records |= self.env['ir.attachment'].browse(att_cmd[1])
+                            else:  # Direct ID
+                                attachment_records |= self.env['ir.attachment'].browse(att_cmd)
+                        
+                        # Copy attachments to waha.message
+                        for attachment in attachment_records:
+                            if attachment.exists():
+                                # Create a copy for waha.message
+                                attachment.sudo().copy({
+                                    'res_model': 'waha.message',
+                                    'res_id': waha_message.id,
+                                })
+                                _logger.info('Copied attachment %s to waha.message %s', attachment.name, waha_message.id)
 
                     _logger.info('mail_message_id: %s', isinstance(result, int) and result or (result.id if result else 'None'))
                     
-                    _logger.info('Created waha.message %s (auto-send via compute, mail_msg: %s)', 
-                                waha_message.id, waha_message.mail_message_id.id if waha_message.mail_message_id else None)
+                    _logger.info('Created waha.message %s (type=%s, auto-send via compute, mail_msg: %s)', 
+                                waha_message.id, content_type, waha_message.mail_message_id.id if waha_message.mail_message_id else None)
                 except Exception as e:
                     _logger.warning('Error sending message: %s', str(e))
                     # Don't fail the post, just warn
@@ -107,53 +168,6 @@ class MailThread(models.AbstractModel):
                 _logger.exception('Error in WhatsApp message_post: %s', str(e))
         
         return result
-
-    def _message_send_whatsapp(self, template_id=None, numbers=None):
-        """
-        Send WhatsApp message for this record
-        
-        :param template_id: waha.template record ID
-        :param numbers: List of phone numbers to send to
-        :return: waha.message records created
-        """
-        self.ensure_one()
-        
-        if not numbers and hasattr(self, 'mobile'):
-            numbers = [self.mobile] if self.mobile else []
-        
-        if not numbers:
-            return self.env['waha.message']
-        
-        # Get template
-        template = self.env['waha.template'].browse(template_id) if template_id else None
-        
-        if not template:
-            return self.env['waha.message']
-        
-        # Get account
-        wa_account = template.wa_account_id
-        if not wa_account or wa_account.status != 'connected':
-            return self.env['waha.message']
-        
-        # Format body
-        body = template._get_formatted_body(self)
-        
-        # Create messages
-        messages = self.env['waha.message']
-        for number in numbers:
-            message = self.env['waha.message'].create({
-                'wa_account_id': wa_account.id,
-                'mobile_number': number,
-                'wa_template_id': template.id,
-                'body': body,
-                'message_type': 'outbound',
-            })
-            messages |= message
-        
-        # Send messages
-        messages.action_send()
-        
-        return messages
 
     def action_send_whatsapp(self):
         """Open WhatsApp composer wizard"""

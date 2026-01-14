@@ -17,6 +17,7 @@
                     <group string="Account &amp; Contact">
                         <group>
                             <field name="wa_account_id"/>
+                            <field name="waha_partner_id" readonly="1"/>
                             <field name="partner_id" readonly="1"/>
                             <field name="waha_chat_id" readonly="1"/>
                         </group>

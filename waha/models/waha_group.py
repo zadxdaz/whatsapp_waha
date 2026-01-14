@@ -6,6 +6,9 @@ class WahaGroup(models.Model):
     _name = 'waha.group'
     _description = 'WhatsApp Group'
     _rec_name = 'name'
+    _sql_constraints = [
+        ('group_id_unique', 'UNIQUE(group_id)', 'The Group ID must be unique!')
+    ]
 
     name = fields.Char(
         string='Group Name',
@@ -16,7 +19,6 @@ class WahaGroup(models.Model):
     group_id = fields.Char(
         string='Group ID',
         required=True,
-        unique=True,
         help='Unique WhatsApp group ID (e.g., 123456789-1234567890@g.us)'
     )
     

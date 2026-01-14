@@ -78,7 +78,10 @@ class WahaChat(models.Model):
         'chat_id',
         'partner_id',
         string="Group Participants",
-        help="Members of the group chat"
+        compute='_compute_group_participants',
+        store=True,
+        readonly=False,
+        help="Members of the group chat (auto-fetched from WhatsApp if empty)"
     )
     
     group_description = fields.Text(string="Group Description")
@@ -184,6 +187,53 @@ class WahaChat(models.Model):
             ], limit=1)
             
             chat.partner_id = partner if partner else False
+    
+    @api.depends('chat_type', 'wa_chat_id', 'wa_account_id')
+    def _compute_group_participants(self):
+        """
+        Auto-compute group participants from WhatsApp
+        
+        For group chats without participants, automatically fetches
+        the participant list from WAHA API.
+        """
+        for chat in self:
+            # Skip if not a group
+            if chat.chat_type != 'group':
+                continue
+            
+            # Skip if already has participants
+            if chat.group_participants:
+                continue
+            
+            # Skip if missing required fields
+            if not chat.wa_chat_id or not chat.wa_account_id:
+                continue
+            
+            # Auto-fetch participants from WAHA
+            try:
+                from odoo.addons.waha.tools.waha_api import WahaApi
+                api = WahaApi(chat.wa_account_id)
+                
+                _logger.info('Auto-fetching group participants for chat %s', chat.wa_chat_id)
+                group_info = api.get_group_info(chat.wa_chat_id)
+                
+                if not group_info:
+                    _logger.warning('Could not fetch group info for %s', chat.wa_chat_id)
+                    continue
+                
+                # Extract participants from groupMetadata
+                group_metadata = group_info.get('groupMetadata', group_info)
+                participants_data = group_metadata.get('participants', [])
+                
+                if participants_data:
+                    # Use internal method to sync
+                    chat._sync_group_participants(participants_data)
+                    _logger.info('Auto-fetched %d participants for group %s', 
+                               len(participants_data), chat.id)
+                
+            except Exception as e:
+                _logger.warning('Failed to auto-fetch participants for chat %s: %s', 
+                              chat.id, str(e))
 
     # ============================================================
     # CRUD & LIFECYCLE
@@ -363,17 +413,23 @@ class WahaChat(models.Model):
                 _logger.warning('No group info returned from WAHA for %s', self.wa_chat_id)
                 return
             
+            # Extract from groupMetadata or use top-level if not nested
+            group_metadata = group_info.get('groupMetadata', group_info)
+            
             # Update basic info
             vals = {}
             
-            if group_info.get('name'):
-                vals['name'] = group_info['name']
+            # Name can be at top level or in metadata
+            name = group_info.get('name') or group_metadata.get('subject')
+            if name:
+                vals['name'] = name
             
-            if group_info.get('description'):
-                vals['group_description'] = group_info['description']
+            # Description only in metadata
+            if group_metadata.get('desc'):
+                vals['group_description'] = group_metadata['desc']
             
             # Update participants
-            participants_data = group_info.get('participants', [])
+            participants_data = group_metadata.get('participants', [])
             if participants_data:
                 self._sync_group_participants(participants_data)
             
@@ -400,24 +456,45 @@ class WahaChat(models.Model):
         participant_partners = []
         
         for participant in participants_data:
-            # Extract phone number from participant ID
+            # Extract LID and phone from participant ID
             participant_id = participant.get('id', {})
-            if isinstance(participant_id, dict):
-                phone = participant_id.get('user', '').split('@')[0]
-            else:
-                phone = str(participant_id).split('@')[0]
             
-            if not phone:
+            lid = None
+            phone = None
+            
+            if isinstance(participant_id, dict):
+                # New format: {'user': '123456', 'server': 'lid' or 'c.us'}
+                user = participant_id.get('user', '')
+                server = participant_id.get('server', '')
+                
+                if server == 'lid':
+                    lid = user
+                else:
+                    phone = user
+            else:
+                # Old format: string like '123456@c.us' or '123456@lid'
+                participant_str = str(participant_id)
+                if '@lid' in participant_str:
+                    lid = participant_str.split('@')[0]
+                elif '@c.us' in participant_str:
+                    phone = participant_str.split('@')[0]
+                else:
+                    phone = participant_str.split('@')[0] if '@' in participant_str else participant_str
+            
+            if not lid and not phone:
+                _logger.warning('Could not extract LID or phone from participant: %s', participant_id)
                 continue
             
-            # Find or create partner
-            partner = WahaPartner.find_or_create_by_phone(
+            # Find or create partner (by LID or phone)
+            waha_partner = WahaPartner.find_or_create_by_lid_or_phone(
+                lid=lid,
                 phone=phone,
-                wa_account=self.wa_account_id
+                wa_account=self.wa_account_id,
+                auto_enrich=True
             )
             
-            if partner:
-                participant_partners.append(partner.id)
+            if waha_partner and waha_partner.partner_id:
+                participant_partners.append(waha_partner.partner_id.id)
         
         # Update group participants
         if participant_partners:
@@ -429,6 +506,72 @@ class WahaChat(models.Model):
             
             # Sync to discuss channel
             self._sync_channel_members()
+        
+        return len(participant_partners)
+    
+    def sync_group_participants_from_waha(self):
+        """
+        Fetch and sync group participants from WAHA API
+        
+        Public method that can be called from UI button or other code.
+        Only works for group chats.
+        
+        Returns:
+            dict: Action notification or raises UserError
+        """
+        self.ensure_one()
+        
+        if self.chat_type != 'group':
+            raise UserError(_('This action is only available for group chats'))
+        
+        try:
+            from odoo.addons.waha.tools.waha_api import WahaApi
+            api = WahaApi(self.wa_account_id)
+            
+            # Get group info from WAHA
+            _logger.info('Fetching group participants for chat %s from WAHA', self.wa_chat_id)
+            group_info = api.get_group_info(self.wa_chat_id)
+            _logger.info('Received group info: %s', group_info)
+            
+            if not group_info:
+                raise UserError(_('Could not fetch group information from WhatsApp'))
+            
+            # Extract participants from groupMetadata
+            group_metadata = group_info.get('groupMetadata', group_info)
+            participants_data = group_metadata.get('participants', [])
+            
+            if not participants_data:
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': _('No Participants'),
+                        'message': _('No participants found in this group'),
+                        'type': 'warning',
+                        'sticky': False,
+                    }
+                }
+            
+            # Sync participants
+            count = self._sync_group_participants(participants_data)
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _('Participants Synced'),
+                    'message': _('%d participants synced successfully from WhatsApp') % count,
+                    'type': 'success',
+                    'sticky': False,
+                }
+            }
+            
+        except UserError:
+            raise
+        except Exception as e:
+            error_msg = str(e)
+            _logger.error('Failed to sync group participants: %s', error_msg)
+            raise UserError(_('Failed to sync participants: %s') % error_msg)
 
     # ============================================================
     # MESSAGE TRACKING

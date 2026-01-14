@@ -480,6 +480,11 @@ class WahaAccount(models.Model):
                             sender_phone = sender_id.replace('@c.us', '').replace('@lid', '').replace('@g.us', '')
                             sender_phone = ''.join(filter(str.isdigit, sender_phone))
                             
+                            # Skip messages with invalid sender phone
+                            if not sender_phone or sender_phone == '0':
+                                _logger.warning('Skipping message %s with invalid sender phone: %s', msg_uid, sender_id)
+                                continue
+                            
                             # Extract message content
                             body = msg.get('body', '') or msg.get('text', {}).get('body', '') or ''
                             
@@ -501,6 +506,14 @@ class WahaAccount(models.Model):
                             else:
                                 wa_timestamp = fields.Datetime.now()
                             
+                            # Validate msg for raw_payload
+                            if not msg or not isinstance(msg, dict):
+                                _logger.error('Invalid msg payload for message %s: type=%s, value=%s',
+                                            msg_uid, type(msg).__name__, msg)
+                                valid_msg = {}
+                            else:
+                                valid_msg = msg
+                            
                             # Create message with raw fields (auto-compute handles rest)
                             vals = {
                                 'wa_account_id': self.id,
@@ -512,7 +525,7 @@ class WahaAccount(models.Model):
                                 'raw_chat_id': chat_id,
                                 'raw_sender_phone': sender_phone,
                                 'wa_timestamp': wa_timestamp,
-                                'raw_payload': msg,
+                                'raw_payload': valid_msg,
                             }
                             
                             # Create message - auto-compute will handle:

@@ -1,11 +1,8 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import base64
-import io
 import logging
 import re
-import subprocess
-import tempfile
 from datetime import datetime
 
 from odoo import models, fields, api, _
@@ -104,6 +101,11 @@ class WahaMessage(models.Model):
         help="Original chat ID from WAHA (e.g., 123456@c.us or 123456@g.us)"
     )
     
+    raw_sender_lid = fields.Char(
+        string="Raw Sender LID",
+        help="Sender's WhatsApp LID (Long ID)"
+    )
+    
     raw_sender_phone = fields.Char(
         string="Raw Sender Phone",
         help="Sender's phone number (normalized, no symbols)"
@@ -121,15 +123,24 @@ class WahaMessage(models.Model):
         help="WhatsApp chat/conversation this message belongs to"
     )
     
-    partner_id = fields.Many2one(
-        'res.partner',
-        string="Contact",
-        compute='_compute_partner_id',
+    waha_partner_id = fields.Many2one(
+        'waha.partner',
+        string="WAHA Contact",
+        compute='_compute_waha_partner_id',
         store=True,
         readonly=False,
         ondelete='set null',
         index=True,
-        help="Contact who sent/received this message"
+        help="WAHA partner record who sent/received this message"
+    )
+    
+    partner_id = fields.Many2one(
+        'res.partner',
+        string="Contact",
+        related='waha_partner_id.partner_id',
+        store=True,
+        readonly=True,
+        help="Contact who sent/received this message (from WAHA partner)"
     )
     
     mail_message_id = fields.Many2one(
@@ -238,15 +249,18 @@ class WahaMessage(models.Model):
                 
                 # Determine partner for 1-1 chats
                 partner = None
-                if message.partner_id:
-                    partner = message.partner_id
-                elif message.raw_sender_phone and '@g.us' not in message.raw_chat_id:
-                    # Try to find partner for 1-1 chat
-                    partner = self.env['waha.partner'].find_or_create_by_phone(
+                if message.waha_partner_id:
+                    partner = message.waha_partner_id.partner_id
+                elif '@g.us' not in message.raw_chat_id:
+                    # Try to find res.partner for 1-1 chat (by LID or phone)
+                    waha_partner = self.env['waha.partner'].find_or_create_by_lid_or_phone(
+                        lid=message.raw_sender_lid,
                         phone=message.raw_sender_phone,
                         wa_account=message.wa_account_id,
                         auto_enrich=False
                     )
+                    if waha_partner and waha_partner.partner_id:
+                        partner = waha_partner.partner_id
                 
                 chat = self.env['waha.chat'].find_or_create(
                     wa_account=message.wa_account_id,
@@ -255,51 +269,119 @@ class WahaMessage(models.Model):
                 )
                 message.waha_chat_id = chat
     
-    @api.depends('raw_sender_phone', 'wa_account_id', 'message_type')
-    def _compute_partner_id(self):
+    @api.depends('raw_sender_lid', 'raw_sender_phone', 'wa_account_id', 'message_type')
+    def _compute_waha_partner_id(self):
         """
-        Auto-compute partner relationship from raw_sender_phone
+        Auto-compute waha.partner relationship from raw_sender_lid or raw_sender_phone
         
-        For inbound messages: partner is the sender
-        For outbound messages: partner is the recipient
+        Search priority:
+        1. By LID (most reliable)
+        2. By phone number
+        
+        For inbound messages: waha_partner is the sender
+        For outbound messages: waha_partner is the recipient
         """
         for message in self:
-            if not message.raw_sender_phone or not message.wa_account_id:
-                message.partner_id = False
+            _logger.info('Computing waha_partner for message %s: lid=%s, phone=%s, chat=%s', 
+                        message.id, message.raw_sender_lid, message.raw_sender_phone, message.raw_chat_id)
+            
+            # Need at least one identifier
+            if not (message.raw_sender_lid or message.raw_sender_phone) or not message.wa_account_id:
+                _logger.warning('No identifiers for message %s', message.id)
+                message.waha_partner_id = False
+                continue
+            
+            # Skip if invalid phone number (when no LID)
+            if not message.raw_sender_lid and message.raw_sender_phone in ['0', '']:
+                _logger.warning('Skipping partner creation for invalid identifiers')
+                message.waha_partner_id = False
                 continue
             
             # Skip if this is a group ID (groups don't have partners)
-            if '@g.us' in str(message.raw_sender_phone):
-                message.partner_id = False
+            if message.raw_sender_phone and '@g.us' in str(message.raw_sender_phone):
+                _logger.warning('Skipping partner for group phone: %s', message.raw_sender_phone)
+                message.waha_partner_id = False
                 continue
             
-            # Search for existing waha.partner
-            waha_partner = self.env['waha.partner'].search([
-                ('phone_number', '=', message.raw_sender_phone),
-                ('wa_account_id', '=', message.wa_account_id.id)
-            ], limit=1)
+            if message.raw_chat_id and '@g.us' in str(message.raw_chat_id):
+                # This is a group message - partner is the participant who sent it
+                _logger.info('Group message detected, searching for participant partner')
+            
+            # 1. Try to find by LID first (most reliable)
+            waha_partner = None
+            if message.raw_sender_lid:
+                waha_partner = self.env['waha.partner'].search([
+                    ('lid', '=', message.raw_sender_lid),
+                    ('wa_account_id', '=', message.wa_account_id.id)
+                ], limit=1)
+                
+                if waha_partner:
+                    _logger.info('Found waha.partner by LID %s: %s', 
+                               message.raw_sender_lid, waha_partner.id)
+                    
+                    # Update phone if missing and we have it
+                    if message.raw_sender_phone and not waha_partner.phone_number:
+                        _logger.info('Updating waha.partner %s with phone %s', 
+                                   waha_partner.id, message.raw_sender_phone)
+                        waha_partner.sudo().write({'phone_number': message.raw_sender_phone})
+                    
+                    message.waha_partner_id = waha_partner
+                    continue
+                else:
+                    _logger.info('No waha.partner found by LID %s', message.raw_sender_lid)
+            
+            # 2. Try to find by phone number
+            if message.raw_sender_phone:
+                waha_partner = self.env['waha.partner'].search([
+                    ('phone_number', '=', message.raw_sender_phone),
+                    ('wa_account_id', '=', message.wa_account_id.id)
+                ], limit=1)
+                
+                if waha_partner:
+                    _logger.info('Found waha.partner by phone %s: %s', 
+                               message.raw_sender_phone, waha_partner.id)
+                    
+                    # Update LID if missing and we have it
+                    if message.raw_sender_lid and not waha_partner.lid:
+                        _logger.info('Updating waha.partner %s with LID %s', 
+                                   waha_partner.id, message.raw_sender_lid)
+                        waha_partner.sudo().write({'lid': message.raw_sender_lid})
+                    
+                    message.waha_partner_id = waha_partner
+                    continue
+                else:
+                    _logger.info('No waha.partner found by phone %s', message.raw_sender_phone)
+            
+            # 3. Not found - Auto-create waha.partner
+            _logger.info('Auto-creating waha.partner (LID=%s, phone=%s)', 
+                        message.raw_sender_lid, message.raw_sender_phone)
+            
+            # For group messages, don't auto-enrich (too slow and can fail)
+            auto_enrich = '@g.us' not in str(message.raw_chat_id)
+            
+            waha_partner = self.env['waha.partner'].find_or_create_by_lid_or_phone(
+                lid=message.raw_sender_lid,
+                phone=message.raw_sender_phone,
+                wa_account=message.wa_account_id,
+                auto_enrich=auto_enrich
+            )
             
             if waha_partner:
-                message.partner_id = waha_partner.partner_id
+                _logger.info('Created/found waha.partner: %s', waha_partner.id)
+                message.waha_partner_id = waha_partner
             else:
-                # Auto-create partner if missing
-                _logger.info('Auto-creating partner for phone: %s', message.raw_sender_phone)
-                
-                partner = self.env['waha.partner'].find_or_create_by_phone(
-                    phone=message.raw_sender_phone,
-                    wa_account=message.wa_account_id,
-                    auto_enrich=True
-                )
-                message.partner_id = partner
+                _logger.warning('Failed to create waha.partner for LID=%s, phone=%s', 
+                              message.raw_sender_lid, message.raw_sender_phone)
+                message.waha_partner_id = False
     
-    @api.depends('waha_chat_id', 'partner_id', 'body', 'wa_timestamp')
+    @api.depends('waha_chat_id', 'waha_partner_id', 'body', 'wa_timestamp')
     def _compute_mail_message_id(self):
         """
         Auto-compute discuss message relationship
         
         Creates mail.message in the discuss channel if:
         - waha_chat_id exists (with discuss_channel_id)
-        - partner_id exists (message author)
+        - waha_partner_id exists (message author)
         - No mail_message_id exists yet
         """
         for message in self:
@@ -307,8 +389,8 @@ class WahaMessage(models.Model):
             if message.mail_message_id:
                 continue
             
-            # Need chat and partner to create discuss message
-            if not message.waha_chat_id or not message.partner_id:
+            # Need chat and waha_partner to create discuss message
+            if not message.waha_chat_id or not message.waha_partner_id:
                 message.mail_message_id = False
                 continue
             
@@ -328,16 +410,38 @@ class WahaMessage(models.Model):
                 # Clean HTML from body
                 body_clean = re.sub(r'<[^>]+>', '', message.body or '').strip()
                 
+                # Ensure we have a valid partner for author_id
+                if not message.waha_partner_id or not message.waha_partner_id.partner_id:
+                    _logger.warning('No waha_partner_id or partner_id for message %s, cannot create discuss message', message.id)
+                    message.mail_message_id = False
+                    continue
+                
                 # Prepare post params
                 post_params = {
                     'body': body_clean,
                     'message_type': 'comment',
                     'subtype_xmlid': 'mail.mt_comment',
-                    'author_id': message.partner_id.id,
+                    'author_id': message.waha_partner_id.partner_id.id,
                 }
+                _logger.info('Author partner for discuss message: %s', post_params['author_id'])
                 
                 if message.wa_timestamp:
                     post_params['date'] = message.wa_timestamp
+                
+                # Add parent_id if this is a reply
+                if message.reply_to_message_id:
+                    _logger.info('Message %s is reply to message %s', message.id, message.reply_to_message_id.id)
+                    
+                    # Force compute mail_message_id on parent if needed
+                    if not message.reply_to_message_id.mail_message_id:
+                        _logger.info('Parent message %s has no mail_message_id, forcing compute', message.reply_to_message_id.id)
+                        message.reply_to_message_id._compute_mail_message_id()
+                    
+                    if message.reply_to_message_id.mail_message_id:
+                        post_params['parent_id'] = message.reply_to_message_id.mail_message_id.id
+                        _logger.info('Setting parent_id=%s for reply in Discuss', post_params['parent_id'])
+                    else:
+                        _logger.warning('Cannot set parent_id: parent message %s has no mail_message_id', message.reply_to_message_id.id)
                 
                 _logger.info('message_post params: %s', post_params)
                 
@@ -359,7 +463,7 @@ class WahaMessage(models.Model):
                 )
                 message.mail_message_id = False
     
-    @api.depends('waha_chat_id', 'partner_id', 'state', 'body', 'wa_account_id')
+    @api.depends('waha_chat_id', 'waha_partner_id', 'state', 'body', 'wa_account_id')
     def _compute_msg_uid(self):
         """
         Auto-compute msg_uid by sending message through WAHA
@@ -411,28 +515,82 @@ class WahaMessage(models.Model):
                     _logger.warning('Message %s has no body or attachments', message.id)
                     continue
                 
-                # Send based on content type
+                # Send based on content type and attachments
                 result = None
+                attachment = message.attachment_ids[0] if message.attachment_ids else None
                 
-                if message.content_type == 'text' or not message.attachment_ids:
+                if not attachment:
+                    # Text-only message
+                    _logger.info('Sending text message to %s', chat_wa_id)
                     result = api.send_text(
                         chat_wa_id,
                         body_clean or '(empty)',
                         message.reply_to_msg_uid
                     )
+                    
+                elif message.content_type == 'image' or (attachment.mimetype and attachment.mimetype.startswith('image/')):
+                    # Image message
+                    # Convert datas to string if it's bytes (Odoo can return either)
+                    image_data = attachment.datas
+                    if isinstance(image_data, bytes):
+                        image_data = image_data.decode('utf-8')
+                    
+                    _logger.info('Sending image to %s (mimetype: %s, reply_to: %s)', chat_wa_id, attachment.mimetype, message.reply_to_msg_uid)
+                    result = api.send_image(
+                        chat_wa_id,
+                        image_data,
+                        caption=body_clean if body_clean else None,
+                        filename=attachment.name,
+                        reply_to=message.reply_to_msg_uid
+                    )
+                    
+                elif message.content_type == 'video' or (attachment.mimetype and attachment.mimetype.startswith('video/')):
+                    # Video message
+                    video_data = attachment.datas
+                    if isinstance(video_data, bytes):
+                        video_data = video_data.decode('utf-8')
+                    
+                    _logger.info('Sending video to %s (mimetype: %s, reply_to: %s)', chat_wa_id, attachment.mimetype, message.reply_to_msg_uid)
+                    result = api.send_video(
+                        chat_wa_id,
+                        video_data,
+                        caption=body_clean if body_clean else None,
+                        reply_to=message.reply_to_msg_uid
+                    )
+                    
+                elif message.content_type == 'audio' or (attachment.mimetype and attachment.mimetype.startswith('audio/')):
+                    # Voice/Audio message
+                    audio_data = attachment.datas
+                    if isinstance(audio_data, bytes):
+                        audio_data = audio_data.decode('utf-8')
+                    
+                    _logger.info('Sending audio to %s (mimetype: %s, reply_to: %s)', chat_wa_id, attachment.mimetype, message.reply_to_msg_uid)
+                    result = api.send_voice(
+                        chat_wa_id,
+                        audio_data,
+                        convert=True,  # Auto-convert to opus format
+                        reply_to=message.reply_to_msg_uid
+                    )
+                    
                 else:
-                    # Handle media sending
-                    attachment = message.attachment_ids[0]
+                    # Document/File message (default for any other type)
+                    file_data = attachment.datas
+                    if isinstance(file_data, bytes):
+                        file_data = file_data.decode('utf-8')
+                    
+                    _logger.info('Sending file to %s (mimetype: %s, reply_to: %s)', chat_wa_id, attachment.mimetype, message.reply_to_msg_uid)
                     result = api.send_file(
                         chat_wa_id,
-                        attachment.datas,
+                        file_data,
                         attachment.name,
                         attachment.mimetype,
-                        body_clean
+                        caption=body_clean if body_clean else None,
+                        reply_to=message.reply_to_msg_uid
                     )
                 
                 # Update with result
                 if result and result.get('id'):
+                    # waha_api already normalizes the response to extract _serialized
                     message.msg_uid = result.get('id')
                     message.state = 'sent'
                     message.sent_date = fields.Datetime.now()
@@ -516,13 +674,20 @@ class WahaMessage(models.Model):
             return []
         
         # Process media
-        return self._process_media_from_payload(self.raw_payload, detected_type)
+        attachment_ids = self._process_media_from_payload(self.raw_payload, detected_type)
+        
+        # Notify the discuss channel about new attachments
+        if attachment_ids and self.mail_message_id:
+            self._notify_discuss_attachments()
+        
+        return attachment_ids
     
     def _process_media_from_payload(self, payload, content_type):
         """
         Download and attach media from WAHA payload
         
-        Creates attachment and links it directly to the mail.message
+        Simplified approach: if hasMedia=True, download from URL
+        Same procedure for all media types (image, video, audio, document)
         
         Args:
             payload: WAHA payload with media info
@@ -542,105 +707,49 @@ class WahaMessage(models.Model):
             _logger.warning('No media in payload for %s', content_type)
             return []
         
-        # Get media data
-        media_data = media.get('data')  # base64
-        media_url = media.get('url')    # HTTP URL
+        # Get media URL
+        media_url = media.get('url')
+        if not media_url:
+            _logger.warning('No media URL in payload for %s', content_type)
+            return []
+        
         mimetype = media.get('mimetype') or self._get_default_mimetype(content_type)
         filename = media.get('filename') or self._get_default_filename(content_type, mimetype)
         
-        # For videos and images, always use URL (base64 in _data.body is just thumbnail)
-        # For audio, prefer base64 if available (it's the full audio)
-        use_url_priority = content_type in ('image', 'video')
+        # Download media from URL
+        try:
+            # Fix localhost URLs
+            if 'localhost' in media_url or '127.0.0.1' in media_url:
+                media_url = media_url.replace(
+                    'http://localhost:3000',
+                    self.wa_account_id.waha_url.rstrip('/')
+                )
+            
+            # Download with authentication
+            headers = {}
+            if self.wa_account_id.api_key:
+                headers['X-Api-Key'] = self.wa_account_id.api_key
+            
+            _logger.info('Downloading %s from URL: %s', content_type, media_url)
+            timeout = 60 if content_type in ('video', 'document') else 30
+            
+            import requests
+            response = requests.get(media_url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            media_binary = response.content
+            
+            _logger.info('Downloaded %s: %d bytes, mimetype=%s', content_type, len(media_binary), mimetype)
+            
+        except Exception as e:
+            _logger.error('Failed to download %s from URL: %s', content_type, str(e))
+            return []
         
-        # Check _data.body for base64 (WEBJS engine) only for audio
-        if not media_data and not use_url_priority:
-            _data = payload.get('_data', {})
-            media_data = _data.get('body')  # base64 from WEBJS
-            if media_data:
-                _logger.info('Using base64 from _data.body for content_type=%s', content_type)
-        
-        # Get binary data
-        import base64
-        import requests
-        import io
-        import subprocess
-        import tempfile
-        
-        media_binary = None
-        
-        # For videos and images, prioritize URL download over base64 (base64 is just thumbnail)
-        if use_url_priority and media_url:
-            _logger.info('%s detected, downloading from URL instead of using base64 thumbnail', content_type.capitalize())
-            try:
-                # Fix localhost URLs
-                if 'localhost' in media_url or '127.0.0.1' in media_url:
-                    media_url = media_url.replace(
-                        'http://localhost:3000',
-                        self.wa_account_id.waha_url.rstrip('/')
-                    )
-                
-                # Download with authentication
-                headers = {}
-                if self.wa_account_id.api_key:
-                    headers['X-Api-Key'] = self.wa_account_id.api_key
-                
-                _logger.info('Downloading %s from URL: %s', content_type, media_url)
-                timeout = 60 if content_type == 'video' else 30
-                response = requests.get(media_url, headers=headers, timeout=timeout)
-                response.raise_for_status()
-                media_binary = response.content
-                _logger.info('Downloaded %s: %d bytes', content_type, len(media_binary))
-            except Exception as e:
-                _logger.error('Failed to download %s from URL: %s', content_type, str(e))
-        
-        # For non-video types, try base64 first
-        elif media_data and not media_binary:
-            try:
-                media_binary = base64.b64decode(media_data)
-                _logger.info('Decoded base64 media: %d bytes, mimetype=%s', len(media_binary), mimetype)
-            except Exception as e:
-                _logger.error('Failed to decode base64 media: %s', str(e))
-        
-        # Fallback to URL if base64 failed or not available
-        elif media_url and not media_binary:
-            try:
-                # Fix localhost URLs
-                if 'localhost' in media_url or '127.0.0.1' in media_url:
-                    media_url = media_url.replace(
-                        'http://localhost:3000',
-                        self.wa_account_id.waha_url.rstrip('/')
-                    )
-                
-                # Download with authentication
-                headers = {}
-                if self.wa_account_id.api_key:
-                    headers['X-Api-Key'] = self.wa_account_id.api_key
-                
-                _logger.info('Downloading from URL: %s', media_url)
-                response = requests.get(media_url, headers=headers, timeout=30)
-                response.raise_for_status()
-                media_binary = response.content
-                _logger.info('Downloaded: %d bytes', len(media_binary))
-            except Exception as e:
-                _logger.error('Failed to download media from URL: %s', str(e))
-        
-        # Convert audio to MP3 if needed (for better browser compatibility)
-        if media_binary and mimetype and mimetype.startswith('audio/') and 'ogg' in mimetype.lower():
-            _logger.info('Converting audio from %s to MP3 for better compatibility', mimetype)
-            try:
-                media_binary = self._convert_audio_to_mp3(media_binary)
-                mimetype = 'audio/mpeg'
-                # Update filename extension
-                if filename.endswith('.ogg'):
-                    filename = filename[:-4] + '.mp3'
-                _logger.info('Audio converted to MP3 successfully: %d bytes', len(media_binary))
-            except Exception as e:
-                _logger.warning('Failed to convert audio to MP3, using original: %s', str(e))
-        
-        # Create attachment
+        # Create attachments
         if media_binary:
             try:
-                _logger.info('Creating attachment: name=%s, type=binary, mimetype=%s, size=%d bytes', 
+                import base64
+                
+                _logger.info('Creating attachment: name=%s, mimetype=%s, size=%d bytes', 
                             filename, mimetype, len(media_binary))
                 
                 # Create attachment linked to waha.message (for our records)
@@ -667,8 +776,7 @@ class WahaMessage(models.Model):
                     })
                     _logger.info('Attachment created for mail.message: id=%s', attachment_mail.id)
                     
-                    # Explicitly link attachment to mail.message.attachment_ids
-                    # This ensures Odoo Discuss renders it correctly
+                    # Link attachment to mail.message
                     self.mail_message_id.sudo().write({
                         'attachment_ids': [(4, attachment_mail.id)]
                     })
@@ -676,7 +784,6 @@ class WahaMessage(models.Model):
                     
                     return [attachment_waha.id, attachment_mail.id]
                 
-                _logger.info('Created attachment: %s (%s)', filename, content_type)
                 return [attachment_waha.id]
                 
             except Exception as e:
@@ -721,76 +828,6 @@ class WahaMessage(models.Model):
         
         return 'text'
     
-    def _convert_audio_to_mp3(self, audio_binary):
-        """
-        Convert audio file to MP3 format using ffmpeg
-        
-        Args:
-            audio_binary: bytes - Original audio file content
-            
-        Returns:
-            bytes - MP3 audio file content
-        """
-        try:
-            # Create temporary files for input and output
-            with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as input_file:
-                input_file.write(audio_binary)
-                input_path = input_file.name
-            
-            output_path = tempfile.mktemp(suffix='.mp3')
-            
-            try:
-                # Use ffmpeg to convert to MP3
-                # -y: overwrite output file without asking
-                # -i: input file
-                # -acodec libmp3lame: use MP3 codec
-                # -ab 128k: audio bitrate 128kbps (good quality for voice)
-                # -ar 44100: sample rate 44.1kHz
-                # -ac 1: mono channel (voice messages are mono)
-                cmd = [
-                    'ffmpeg',
-                    '-y',  # Overwrite output
-                    '-i', input_path,  # Input file
-                    '-acodec', 'libmp3lame',  # MP3 codec
-                    '-ab', '128k',  # Bitrate
-                    '-ar', '44100',  # Sample rate
-                    '-ac', '1',  # Mono
-                    output_path
-                ]
-                
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                if result.returncode != 0:
-                    _logger.error('ffmpeg conversion failed: %s', result.stderr)
-                    raise Exception(f'ffmpeg failed with code {result.returncode}')
-                
-                # Read the converted file
-                with open(output_path, 'rb') as f:
-                    mp3_binary = f.read()
-                
-                return mp3_binary
-                
-            finally:
-                # Clean up temporary files
-                import os
-                try:
-                    os.unlink(input_path)
-                except:
-                    pass
-                try:
-                    os.unlink(output_path)
-                except:
-                    pass
-                    
-        except Exception as e:
-            _logger.error('Error converting audio to MP3: %s', str(e))
-            raise
-    
     def _get_default_filename(self, content_type, mimetype=None):
         """Get default filename for content type based on mimetype"""
         # Try to infer extension from mimetype
@@ -823,6 +860,31 @@ class WahaMessage(models.Model):
             'sticker': 'sticker.webp',
         }
         return defaults.get(content_type, 'file.bin')
+    
+    def _notify_discuss_attachments(self):
+        """
+        Notify Discuss channel about new attachments
+        
+        This triggers a real-time update in the Odoo Discuss UI
+        so users don't need to refresh the page to see new attachments.
+        """
+        self.ensure_one()
+        
+        if not self.mail_message_id or not self.waha_chat_id or not self.waha_chat_id.discuss_channel_id:
+            return
+        
+        try:
+            # Get the discuss channel
+            channel = self.waha_chat_id.discuss_channel_id
+            
+            # Notify channel members about the message update
+            # This will trigger the frontend to refresh the message and show attachments
+            channel._notify_thread(self.mail_message_id)
+            
+            _logger.info('Notified Discuss channel %s about new attachments for message %s', 
+                        channel.id, self.mail_message_id.id)
+        except Exception as e:
+            _logger.warning('Failed to notify Discuss about attachments: %s', str(e))
 
     # ============================================================
     # SEND MESSAGE (OUTBOUND)
