@@ -366,19 +366,47 @@ class WahaPartner(models.Model):
             else:
                 contact_name = "WhatsApp Contact"
         
-        # Create res.partner
-        partner_vals = {'name': contact_name}
-        
+        # Search for existing res.partner by phone number before creating
+        partner = None
         if normalized_phone:
-            partner_vals['mobile'] = f"+{normalized_phone}"
-            partner_vals['phone'] = f"+{normalized_phone}"
+            partner = self.env['res.partner'].sudo().search([
+                '|',
+                ('mobile', 'ilike', normalized_phone),
+                ('phone', 'ilike', normalized_phone),
+            ], limit=1)
+            
+            if partner:
+                _logger.info('Found existing partner %s with phone %s', partner.id, normalized_phone)
         
-        if contact_image:
-            partner_vals['image_1920'] = contact_image
-        
-        partner = self.env['res.partner'].sudo().create(partner_vals)
-        _logger.info('Created new partner %s (LID=%s, phone=%s)', 
-                    partner.id, lid, normalized_phone)
+        # Create res.partner only if not found
+        if not partner:
+            partner_vals = {'name': contact_name}
+            
+            if normalized_phone:
+                partner_vals['mobile'] = f"+{normalized_phone}"
+                partner_vals['phone'] = f"+{normalized_phone}"
+            
+            if contact_image:
+                partner_vals['image_1920'] = contact_image
+            
+            partner = self.env['res.partner'].sudo().create(partner_vals)
+            _logger.info('Created new partner %s (LID=%s, phone=%s)', 
+                        partner.id, lid, normalized_phone)
+        else:
+            # Update existing partner with enriched data if available
+            update_vals = {}
+            if contact_image and not partner.image_1920:
+                update_vals['image_1920'] = contact_image
+                _logger.info('Updated partner %s with avatar', partner.id)
+            
+            # Update name if current name is generic and we have better one
+            if contact_name and contact_name != f"WhatsApp +{normalized_phone}":
+                if not partner.name or 'WhatsApp' in partner.name or partner.name == normalized_phone:
+                    update_vals['name'] = contact_name
+                    _logger.info('Updated partner %s name to: %s', partner.id, contact_name)
+            
+            if update_vals:
+                partner.sudo().write(update_vals)
         
         # Create waha.partner link
         wa_contact_id = None
