@@ -69,8 +69,6 @@
                         <group string="Notifications">
                             <field name="notify_user_ids" widget="many2many_tags" 
                                    placeholder="Select users to notify"/>
-                            <field name="allowed_company_ids" widget="many2many_tags"
-                                   groups="base.group_multi_company"/>
                         </group>
                     </group>
                 </sheet>

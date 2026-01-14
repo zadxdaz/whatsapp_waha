@@ -42,6 +42,14 @@
         'views/res_partner_views.xml',
         'views/waha_menus.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'waha/static/src/core/public_web/discuss_app_model_patch.js',
+            'waha/static/src/core/public_web/thread_model_patch.js',
+            'waha/static/src/core/web/discuss_app_category_model_patch.js',
+            'waha/static/src/scss/waha_discuss.scss',
+        ],
+    },
     'demo': [
         'data/waha_demo.xml',
     ],

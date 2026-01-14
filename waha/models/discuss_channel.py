@@ -5,6 +5,11 @@ from odoo import models, fields, api
 class DiscussChannel(models.Model):
     _inherit = 'discuss.channel'
 
+    channel_type = fields.Selection(
+        selection_add=[('whatsapp', 'WhatsApp Conversation')],
+        ondelete={'whatsapp': 'cascade'}
+    )
+
     is_whatsapp = fields.Boolean(
         string='Is WhatsApp Channel',
         default=False,

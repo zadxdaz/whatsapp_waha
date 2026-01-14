@@ -387,18 +387,34 @@ class WahaMessage(models.Model):
         for message in self:
             # Skip if already has mail_message_id
             if message.mail_message_id:
+                _logger.debug('Message %s already has mail_message_id: %s', message.id, message.mail_message_id.id)
                 continue
+            
+            _logger.info('Processing message %s for discuss message creation (chat=%s, waha_partner=%s)', 
+                        message.id, 
+                        message.waha_chat_id.id if message.waha_chat_id else None,
+                        message.waha_partner_id.id if message.waha_partner_id else None)
             
             # Need chat and waha_partner to create discuss message
             if not message.waha_chat_id or not message.waha_partner_id:
+                _logger.warning('Message %s missing chat or waha_partner: chat=%s, waha_partner=%s', 
+                              message.id, 
+                              bool(message.waha_chat_id), 
+                              bool(message.waha_partner_id))
                 message.mail_message_id = False
                 continue
             
             # Get discuss channel from chat
             discuss_channel = message.waha_chat_id.discuss_channel_id
             if not discuss_channel:
+                _logger.warning('Chat %s has no discuss_channel_id', message.waha_chat_id.id)
                 message.mail_message_id = False
                 continue
+            
+            _logger.info('Discuss channel found: %s (id=%s, type=%s)', 
+                        discuss_channel.name, 
+                        discuss_channel.id,
+                        discuss_channel.channel_type)
             
             # Auto-create discuss message
             _logger.info(
@@ -446,9 +462,12 @@ class WahaMessage(models.Model):
                 _logger.info('message_post params: %s', post_params)
                 
                 # Create message (with flag to prevent recursion)
+                _logger.info('Calling message_post on channel %s (type=%s)', discuss_channel.id, discuss_channel.channel_type)
                 discuss_msg = discuss_channel.with_context(
                     skip_whatsapp_send=True
                 ).message_post(**post_params)
+                
+                _logger.info('message_post returned: %s', discuss_msg.id if discuss_msg else None)
                 
                 message.mail_message_id = discuss_msg
                 
@@ -457,10 +476,12 @@ class WahaMessage(models.Model):
                     discuss_msg.id, message.id
                 )
             except Exception as e:
-                _logger.error(
+                _logger.exception(
                     'Failed to auto-create discuss message for waha.message %s: %s',
                     message.id, str(e)
                 )
+                import traceback
+                _logger.error('Full traceback: %s', traceback.format_exc())
                 message.mail_message_id = False
     
     @api.depends('waha_chat_id', 'waha_partner_id', 'state', 'body', 'wa_account_id')

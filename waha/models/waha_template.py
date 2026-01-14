@@ -67,13 +67,6 @@ class WahaTemplate(models.Model):
         default=lambda self: self.env.lang
     )
     
-    # Company
-    company_id = fields.Many2one(
-        'res.company',
-        string='Company',
-        default=lambda self: self.env.company
-    )
-    
     active = fields.Boolean(default=True)
 
     @api.depends('wa_account_id')

@@ -99,6 +99,7 @@ class WahaPartner(models.Model):
         default=False,
         help="Indicates if contact info has been retrieved from WAHA"
     )
+    
     last_sync_date = fields.Datetime(string="Last Sync Date")
     
     active = fields.Boolean(default=True)
@@ -551,7 +552,8 @@ class WahaPartner(models.Model):
         
         # Try phone validation
         try:
-            country = wa_account.company_id.country_id if wa_account.company_id else False
+            # Use default company for country context
+            country = self.env.company.country_id if self.env.company else False
             
             result = phone_validation.phone_format(
                 phone,

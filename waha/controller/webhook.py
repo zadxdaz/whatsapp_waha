@@ -158,14 +158,25 @@ class WahaWebhookController(http.Controller):
             chat = message.waha_chat_id
             partner = message.partner_id
             
-            _logger.info('Auto-computed relations: chat=%s, partner=%s, mail_message=%s', 
-                        chat.id if chat else None, 
+            _logger.info('Auto-computed relations: chat=%s (channel=%s), partner=%s, mail_message=%s', 
+                        chat.id if chat else None,
+                        chat.discuss_channel_id.id if (chat and chat.discuss_channel_id) else None,
                         partner.id if partner else None,
                         message.mail_message_id.id if message.mail_message_id else None)
             
             if not chat:
                 _logger.error('Failed to auto-compute chat for message %s', message.id)
                 return
+            
+            # Log discuss channel details
+            if chat.discuss_channel_id:
+                _logger.info('Discuss channel details: id=%s, name=%s, type=%s, members=%s',
+                           chat.discuss_channel_id.id,
+                           chat.discuss_channel_id.name,
+                           chat.discuss_channel_id.channel_type,
+                           len(chat.discuss_channel_id.channel_partner_ids))
+            else:
+                _logger.warning('Chat %s has no discuss_channel_id!', chat.id)
             
             # Only create discuss.message for INBOUND messages
             # Outbound messages already have mail_message_id from _compute_mail_message_id

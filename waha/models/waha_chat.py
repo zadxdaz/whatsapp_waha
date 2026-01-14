@@ -138,15 +138,9 @@ class WahaChat(models.Model):
                 # Auto-create channel if missing
                 _logger.info('Auto-creating discuss.channel for chat: %s', chat.wa_chat_id)
                 
-                # Use partner name for individual chats, chat name for groups
-                if chat.chat_type == 'individual' and chat.partner_id:
-                    channel_name = chat.partner_id.name
-                else:
-                    channel_name = chat.name or chat.wa_chat_id
-                
                 channel_vals = {
-                    'name': channel_name,
-                    'channel_type': 'channel',  # Use 'channel' type so they appear in sidebar
+                    'name': chat._get_channel_name(),
+                    'channel_type': 'whatsapp',  # WhatsApp conversation type
                     'description': chat.wa_chat_id,
                     'is_whatsapp': True,
                     'whatsapp_account_id': chat.wa_account_id.id,
@@ -320,6 +314,32 @@ class WahaChat(models.Model):
         
         return self.discuss_channel_id
     
+    def _get_channel_name(self):
+        """
+        Get the channel name based on chat type and partner
+        
+        Format: "{Account Name} - {Chat Name}"
+        
+        For individual chats: use partner name
+        For groups: use chat name or chat_id as fallback
+        
+        Returns:
+            str: Channel name with account prefix
+        """
+        self.ensure_one()
+        
+        # Get account name prefix
+        account_prefix = self.wa_account_id.name if self.wa_account_id else 'WhatsApp'
+        
+        # Get base chat name
+        if self.chat_type == 'individual' and self.partner_id:
+            base_name = self.partner_id.name
+        else:
+            base_name = self.name or self.wa_chat_id
+        
+        # Return formatted name with account prefix
+        return f"{account_prefix} - {base_name}"
+    
     def _sync_channel_members(self):
         """Sync channel members with discuss.channel"""
         self.ensure_one()
@@ -329,17 +349,29 @@ class WahaChat(models.Model):
             return
         
         channel = self.discuss_channel_id
-        admin = self.env.ref('base.user_admin').sudo()
+        
+        # Get notify users from account configuration
+        notify_partners = []
+        if self.wa_account_id.notify_user_ids:
+            notify_partners = self.wa_account_id.notify_user_ids.mapped('partner_id').ids
+            _logger.info('Notify partners from account: %s', notify_partners)
+        
+        if not notify_partners:
+            # Fallback to admin if no notify users configured
+            admin = self.env.ref('base.user_admin').sudo()
+            notify_partners = [admin.partner_id.id]
+            _logger.warning('No notify_user_ids configured for account %s, using admin as fallback', 
+                          self.wa_account_id.name)
         
         if self.chat_type == 'individual':
-            # For 1-1 chats: add partner + admin
+            # For 1-1 chats: add partner + notify users
             if self.partner_id:
-                members_to_add = [self.partner_id.id, admin.partner_id.id]
+                members_to_add = [self.partner_id.id] + notify_partners
             else:
-                members_to_add = [admin.partner_id.id]
+                members_to_add = notify_partners
         else:
-            # For groups: add all participants + admin
-            members_to_add = [admin.partner_id.id] + self.group_participants.ids
+            # For groups: add all participants + notify users
+            members_to_add = notify_partners + self.group_participants.ids
         
         # Get current members
         current_members = channel.channel_partner_ids.ids
@@ -350,7 +382,8 @@ class WahaChat(models.Model):
             channel.write({
                 'channel_partner_ids': [(4, mid) for mid in new_members]
             })
-            _logger.info('Added %d members to channel %s', len(new_members), channel.id)
+            _logger.info('Added %d members to channel %s (notify_users: %d)', 
+                        len(new_members), channel.id, len(notify_partners))
     
     def add_participant(self, partner):
         """Add participant to group chat"""
@@ -609,11 +642,7 @@ class WahaChat(models.Model):
         if not self.discuss_channel_id:
             raise UserError(_('No Discuss channel linked to this chat'))
         
-        # Use partner name for individual chats, chat name for groups
-        if self.chat_type == 'individual' and self.partner_id:
-            new_name = self.partner_id.name
-        else:
-            new_name = self.name or self.wa_chat_id
+        new_name = self._get_channel_name()
         
         self.discuss_channel_id.write({'name': new_name})
         _logger.info('Updated channel name to: %s', new_name)
