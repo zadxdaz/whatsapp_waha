@@ -34,7 +34,7 @@
 
                         <page string="Preview" name="preview">
                             <group>
-                                <div class="alert alert-info">
+                                <div class="alert alert-info" role="alert">
                                     <strong>Message Preview</strong><br/>
                                     This is how your message will appear with variables replaced.
                                 </div>

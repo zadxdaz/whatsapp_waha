@@ -5,7 +5,7 @@
         <field name="name">Send WhatsApp Message</field>
         <field name="model_id" ref="base.model_res_partner"/>
         <field name="binding_model_id" ref="base.model_res_partner"/>
-        <field name="binding_view_types">list,form</field>
+        <field name="binding_view_types">tree,form</field>
         <field name="state">code</field>
         <field name="code">
 if records:

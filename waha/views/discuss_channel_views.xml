@@ -20,12 +20,12 @@
         </field>
     </record>
 
-    <!-- List view for WhatsApp channels -->
-    <record id="discuss_channel_view_list_whatsapp" model="ir.ui.view">
-        <field name="name">discuss.channel.view.list.waha</field>
+    <!-- Tree view for WhatsApp channels -->
+    <record id="discuss_channel_view_tree_whatsapp" model="ir.ui.view">
+        <field name="name">discuss.channel.view.tree.waha</field>
         <field name="model">discuss.channel</field>
         <field name="arch" type="xml">
-            <list string="WhatsApp Chats" 
+            <tree string="WhatsApp Chats" 
                   decoration-muted="not is_whatsapp"
                   default_order="create_date desc">
                 <field name="is_whatsapp" column_invisible="1"/>
@@ -34,7 +34,7 @@
                 <field name="name"/>
                 <field name="whatsapp_account_id"/>
                 <field name="channel_partner_ids" widget="many2many_tags" string="Members"/>
-            </list>
+            </tree>
         </field>
     </record>
 
@@ -42,7 +42,7 @@
     <record id="action_discuss_channel_whatsapp" model="ir.actions.act_window">
         <field name="name">WhatsApp Channels</field>
         <field name="res_model">discuss.channel</field>
-        <field name="view_mode">list,form</field>
+        <field name="view_mode">tree,form</field>
         <field name="domain">[('channel_type', '=', 'whatsapp')]</field>
         <field name="context">{'default_channel_type': 'whatsapp'}</field>
         <field name="help" type="html">

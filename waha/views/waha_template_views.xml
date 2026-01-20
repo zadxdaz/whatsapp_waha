@@ -58,19 +58,19 @@
 
                         <page string="Variables" name="variables">
                             <field name="variable_ids">
-                                <list editable="bottom">
+                                <tree editable="bottom">
                                     <field name="sequence" widget="handle"/>
                                     <field name="name"/>
                                     <field name="field_name"/>
                                     <field name="field_type"/>
                                     <field name="demo_value"/>
-                                </list>
+                                </tree>
                             </field>
                         </page>
 
                         <page string="Buttons" name="buttons">
                             <field name="button_ids">
-                                <list editable="bottom">
+                                <tree editable="bottom">
                                     <field name="sequence" widget="handle"/>
                                     <field name="button_type"/>
                                     <field name="name"/>
@@ -78,7 +78,7 @@
                                     <field name="url_type" invisible="button_type != 'url'"/>
                                     <field name="phone_number" invisible="button_type != 'phone'"/>
                                     <field name="payload" invisible="button_type != 'quick_reply'"/>
-                                </list>
+                                </tree>
                             </field>
                         </page>
                     </notebook>
@@ -97,14 +97,14 @@
         <field name="name">waha.template.tree</field>
         <field name="model">waha.template</field>
         <field name="arch" type="xml">
-            <list string="WhatsApp Templates">
+            <tree string="WhatsApp Templates">
                 <field name="name"/>
                 <field name="wa_account_id"/>
                 <field name="model_id"/>
                 <field name="status" decoration-success="status=='approved'" widget="badge"/>
                 <field name="messages_count"/>
                 <field name="lang"/>
-            </list>
+            </tree>
         </field>
     </record>
 
@@ -140,7 +140,7 @@
                                 </div>
                                 <div class="oe_kanban_bottom_right">
                                     <span class="badge badge-pill">
-                                        <i class="fa fa-envelope"/> <field name="messages_count"/>
+                                        <i class="fa fa-envelope" title="Messages"/> <field name="messages_count"/>
                                     </span>
                                 </div>
                             </div>
@@ -176,7 +176,7 @@
     <record id="action_waha_template" model="ir.actions.act_window">
         <field name="name">WhatsApp Templates</field>
         <field name="res_model">waha.template</field>
-        <field name="view_mode">kanban,list,form</field>
+        <field name="view_mode">kanban,tree,form</field>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">
                 Create your first WhatsApp Template

@@ -41,7 +41,7 @@
                     <div invisible="not qr_code" class="mt-3 mb-3">
                         <div class="text-center">
                             <field name="qr_code" widget="image" class="mb-3" options="{'size': [300, 300]}"/>
-                            <div class="alert alert-info">
+                            <div class="alert alert-info" role="alert">
                                 <strong>Scan this QR code with WhatsApp</strong><br/>
                                 Open WhatsApp &gt; Settings &gt; Linked Devices &gt; Link a Device
                             </div>
@@ -82,7 +82,7 @@
         <field name="name">waha.account.tree</field>
         <field name="model">waha.account</field>
         <field name="arch" type="xml">
-            <list string="WAHA Accounts" create="1" edit="1" delete="1">
+            <tree string="WAHA Accounts" create="1" edit="1" delete="1">
                 <field name="name" string="Account Name"/>
                 <field name="session_name" string="Session"/>
                 <field name="waha_url" string="WAHA Server"/>
@@ -95,7 +95,7 @@
                        widget="badge"/>
                 <field name="templates_count" string="Templates"/>
                 <field name="active" widget="boolean_toggle" optional="hide"/>
-            </list>
+            </tree>
         </field>
     </record>
 
@@ -131,10 +131,10 @@
                             </div>
                             <div class="o_kanban_record_bottom">
                                 <div class="oe_kanban_bottom_left">
-                                    <i class="fa fa-phone"/> <field name="phone_uid"/>
+                                    <i class="fa fa-phone" title="Phone"/> <field name="phone_uid"/>
                                 </div>
                                 <div class="oe_kanban_bottom_right">
-                                    <i class="fa fa-commenting"/> <field name="templates_count"/> templates
+                                    <i class="fa fa-commenting" title="Templates"/> <field name="templates_count"/> templates
                                 </div>
                             </div>
                         </div>
@@ -171,7 +171,7 @@
     <record id="action_waha_account" model="ir.actions.act_window">
         <field name="name">WhatsApp Accounts</field>
         <field name="res_model">waha.account</field>
-        <field name="view_mode">kanban,list,form</field>
+        <field name="view_mode">kanban,tree,form</field>
         <field name="search_view_id" ref="view_waha_account_search"/>
         <field name="context">{'search_default_active': 1}</field>
         <field name="help" type="html">
