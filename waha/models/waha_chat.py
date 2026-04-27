@@ -207,7 +207,34 @@ class WahaChat(models.Model):
     # ============================================================
     # CRUD & LIFECYCLE
     # ============================================================
-    
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        chats = super().create(vals_list)
+        for chat in chats:
+            chat._ensure_discuss_channel()
+        return chats
+
+    def _ensure_discuss_channel(self):
+        """Create the discuss.channel for this chat if it doesn't exist yet."""
+        self.ensure_one()
+        if self.discuss_channel_id:
+            return self.discuss_channel_id
+
+        channel = self.env['discuss.channel'].sudo().create({
+            'name': self._get_channel_name(),
+            'channel_type': 'whatsapp',
+            'is_whatsapp': True,
+            'wa_chat_id': self.wa_chat_id,
+            'whatsapp_account_id': self.wa_account_id.id,
+        })
+        _logger.info('Created discuss.channel %s for waha.chat %s', channel.id, self.id)
+
+        # Invalidate so _compute_discuss_channel_id picks it up
+        self.invalidate_recordset(['discuss_channel_id'])
+        self._sync_channel_members()
+        return channel
+
     @api.model
     def find_or_create(self, wa_account, chat_id, partner=None):
         """
@@ -274,18 +301,10 @@ class WahaChat(models.Model):
     # ============================================================
     
     def get_or_create_discuss_channel(self):
-        """
-        Get existing discuss channel (auto-created by computed field)
-        
-        The discuss_channel_id is now auto-computed, so this method
-        just ensures it exists and returns it.
-        """
+        """Get existing discuss channel, creating it if it doesn't exist."""
         self.ensure_one()
-        
-        # Trigger recompute if needed
         if not self.discuss_channel_id:
-            self._compute_discuss_channel_id()
-        
+            return self._ensure_discuss_channel()
         return self.discuss_channel_id
     
     def _get_channel_name(self):

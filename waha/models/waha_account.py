@@ -377,6 +377,32 @@ class WahaAccount(models.Model):
         except Exception as e:
             raise UserError(_("Error disconnecting: %s") % str(e))
 
+    def action_repair_discuss_channels(self):
+        """Create missing discuss.channel for every waha.chat that doesn't have one."""
+        self.ensure_one()
+        chats_without_channel = self.env['waha.chat'].search([
+            ('wa_account_id', '=', self.id),
+            ('discuss_channel_id', '=', False),
+        ])
+        repaired = 0
+        for chat in chats_without_channel:
+            try:
+                chat._ensure_discuss_channel()
+                repaired += 1
+            except Exception as e:
+                _logger.warning('Could not repair channel for chat %s: %s', chat.id, e)
+
+        _logger.info('Repaired %d discuss channels for account %s', repaired, self.name)
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': _('Channels Repaired'),
+                'message': _('%d WhatsApp chats now have a Discuss channel.') % repaired,
+                'type': 'success',
+            },
+        }
+
     def action_fetch_chats_and_messages(self):
         """
         Fetch recent chats and recent messages from each chat, persist to DB
