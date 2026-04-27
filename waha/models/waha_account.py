@@ -419,24 +419,38 @@ class WahaAccount(models.Model):
         }
 
     def action_resync_messages(self):
-        """Re-trigger mail_message_id compute for waha.messages that have a channel but no discuss message."""
+        """Re-trigger Discuss sync and repair safe missing message links."""
         self.ensure_one()
-        messages_to_sync = self.env['waha.message'].sudo().search([
+        Message = self.env['waha.message'].sudo()
+        outbound_to_link = Message.search([
+            ('wa_account_id', '=', self.id),
+            ('mail_message_id', '=', False),
+            ('message_type', '=', 'outbound'),
+            ('waha_chat_id.discuss_channel_id', '!=', False),
+        ])
+        repaired_outbound = outbound_to_link._backfill_missing_mail_message_id()
+
+        messages_to_sync = Message.search([
             ('wa_account_id', '=', self.id),
             ('mail_message_id', '=', False),
             ('message_type', '=', 'inbound'),
             ('waha_chat_id.discuss_channel_id', '!=', False),
         ])
-        _logger.info('Re-syncing %d messages for account %s', len(messages_to_sync), self.name)
+        _logger.info(
+            'Re-syncing %d inbound messages and repaired %d outbound links for account %s',
+            len(messages_to_sync), len(repaired_outbound), self.name,
+        )
         messages_to_sync.with_context(allow_outbound_discuss_sync=False)._compute_mail_message_id()
         synced = messages_to_sync.filtered(lambda m: m.mail_message_id)
-        _logger.info('Successfully synced %d/%d messages', len(synced), len(messages_to_sync))
+        _logger.info('Successfully synced %d/%d inbound messages', len(synced), len(messages_to_sync))
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
                 'title': _('Messages Synced'),
-                'message': _('%d of %d messages loaded into conversations.') % (len(synced), len(messages_to_sync)),
+                'message': _('%d of %d messages loaded into conversations. %d message links repaired.') % (
+                    len(synced), len(messages_to_sync), len(repaired_outbound),
+                ),
                 'type': 'success',
             },
         }

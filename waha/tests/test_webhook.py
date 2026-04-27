@@ -286,6 +286,40 @@ class TestHandleIncomingMessage(WahaTestCommon):
         self.assertEqual(reply.reply_to_message_id, original)
 
 
+    def test_reply_to_unlinked_outbound_parent_sets_discuss_parent_id(self):
+        chat = self.make_waha_chat('5491112345678@c.us')
+        self.make_waha_partner(phone='5491112345678')
+        parent_mail = chat.discuss_channel_id.with_context(skip_whatsapp_send=True).message_post(
+            body='Original Odoo message',
+            author_id=self.env.user.partner_id.id,
+        )
+        original = self.env['waha.message'].create({
+            'wa_account_id': self.account.id,
+            'msg_uid': 'true_5491112345678@c.us_3EB0B1A126F30FD7DF95E4',
+            'body': 'Original Odoo message',
+            'message_type': 'outbound',
+            'state': 'sent',
+            'raw_chat_id': '5491112345678@c.us',
+            'raw_sender_phone': '5491112345678',
+        })
+        self.assertFalse(original.mail_message_id)
+        data = self._build_data(
+            'false_5491112345678@c.us_AC7B01F0B02658EE1317FF198F87C02C',
+            body='Prueba',
+            replyTo={'id': original.msg_uid},
+            _data={'quotedStanzaID': '3EB0B1A126F30FD7DF95E4'},
+        )
+
+        self._call(data)
+
+        reply = self.env['waha.message'].search([
+            ('msg_uid', '=', 'false_5491112345678@c.us_AC7B01F0B02658EE1317FF198F87C02C')
+        ])
+        self.assertEqual(reply.reply_to_message_id, original)
+        self.assertEqual(original.mail_message_id, parent_mail)
+        self.assertEqual(reply.mail_message_id.parent_id, parent_mail)
+
+
 class TestHandleMessageAck(WahaTestCommon):
     """_handle_message_ack — delegates to update_status_from_webhook."""
 

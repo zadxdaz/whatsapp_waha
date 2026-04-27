@@ -1,6 +1,7 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import base64
+import html
 import logging
 import re
 from datetime import datetime
@@ -416,7 +417,7 @@ class WahaMessage(models.Model):
                               message.raw_sender_lid, message.raw_sender_phone)
                 message.waha_partner_id = False
     
-    @api.depends('waha_chat_id', 'waha_partner_id', 'body', 'wa_timestamp', 'message_type')
+    @api.depends('waha_chat_id', 'waha_partner_id', 'body', 'wa_timestamp', 'message_type', 'reply_to_message_id')
     def _compute_mail_message_id(self):
         """
         Auto-compute discuss message relationship
@@ -512,20 +513,16 @@ class WahaMessage(models.Model):
                 if message.wa_timestamp:
                     post_params['date'] = message.wa_timestamp
                 
-                # Add parent_id if this is a reply
+                # Add parent_id if this is a reply.  Do not force-create
+                # missing outbound parents: that duplicates Discuss messages.
                 if message.reply_to_message_id:
                     _logger.info('Message %s is reply to message %s', message.id, message.reply_to_message_id.id)
-                    
-                    # Force compute mail_message_id on parent if needed
-                    if not message.reply_to_message_id.mail_message_id:
-                        _logger.info('Parent message %s has no mail_message_id, forcing compute', message.reply_to_message_id.id)
-                        message.reply_to_message_id._compute_mail_message_id()
-                    
-                    if message.reply_to_message_id.mail_message_id:
-                        post_params['parent_id'] = message.reply_to_message_id.mail_message_id.id
+                    parent_mail_message = message._resolve_reply_parent_mail_message()
+                    if parent_mail_message:
+                        post_params['parent_id'] = parent_mail_message.id
                         _logger.info('Setting parent_id=%s for reply in Discuss', post_params['parent_id'])
                     else:
-                        _logger.warning('Cannot set parent_id: parent message %s has no mail_message_id', message.reply_to_message_id.id)
+                        _logger.warning('Cannot set parent_id: parent message %s has no resolvable mail_message_id', message.reply_to_message_id.id)
                 
                 _logger.info('message_post params: %s', post_params)
                 
@@ -552,6 +549,102 @@ class WahaMessage(models.Model):
                 _logger.error('Full traceback: %s', traceback.format_exc())
                 message.mail_message_id = False
     
+    def _clean_discuss_body(self, body):
+        """Return a plain-text value comparable with mail.message.body."""
+        self.ensure_one()
+        return html.unescape(re.sub(r'<[^>]+>', '', body or '').strip())
+
+    def _expected_discuss_author_partner(self):
+        """Return the partner that should author this message in Discuss."""
+        self.ensure_one()
+        if self.message_type == 'outbound':
+            return self.wa_account_id.notify_user_ids[:1].partner_id or self.env.user.partner_id
+        return self.waha_partner_id.partner_id if self.waha_partner_id else self.env['res.partner']
+
+    def _find_existing_discuss_mail_message(self):
+        """Find a unique existing Discuss mail.message for this WAHA message.
+
+        This is intentionally lookup-only: it never creates a Discuss message.
+        It repairs historical outbound records whose `mail_message_id` was not
+        linked even though the original Odoo Discuss post still exists.
+        """
+        self.ensure_one()
+        channel = self.waha_chat_id.discuss_channel_id if self.waha_chat_id else False
+        if not channel:
+            return self.env['mail.message']
+
+        base_domain = [
+            ('model', '=', 'discuss.channel'),
+            ('res_id', '=', channel.id),
+            ('message_type', '=', 'comment'),
+        ]
+        expected_body = self._clean_discuss_body(self.body)
+        compare_date = self.wa_timestamp or self.sent_date
+
+        def _matching_candidates(domain):
+            candidates = self.env['mail.message'].sudo().search(domain, order='date desc, id desc', limit=200)
+            if expected_body:
+                candidates = candidates.filtered(lambda m: self._clean_discuss_body(m.body) == expected_body)
+            # Prefer candidates near the WhatsApp timestamp/send date when
+            # present, but never guess if more than one candidate remains.
+            if compare_date and len(candidates) > 1:
+                same_date = candidates.filtered(lambda m: m.date and abs((m.date - compare_date).total_seconds()) <= 300)
+                if same_date:
+                    candidates = same_date
+            return candidates
+
+        expected_author = self._expected_discuss_author_partner()
+        author_domain = list(base_domain)
+        if expected_author:
+            author_domain.append(('author_id', '=', expected_author.id))
+        candidates = _matching_candidates(author_domain)
+
+        # Historical unlinked outbound messages may have been authored by the
+        # actual posting user, not the account notification user. If the strict
+        # author match finds nothing, fall back to a unique channel/body match.
+        if not candidates:
+            candidates = _matching_candidates(base_domain)
+
+        if len(candidates) == 1:
+            _logger.info('Resolved existing Discuss mail.message %s for waha.message %s', candidates.id, self.id)
+            return candidates
+
+        if len(candidates) > 1:
+            _logger.warning(
+                'Ambiguous Discuss mail.message match for waha.message %s in channel %s; leaving unlinked',
+                self.id, channel.id,
+            )
+        return self.env['mail.message']
+
+    def _resolve_reply_parent_mail_message(self):
+        """Resolve the mail.message to use as parent_id for this reply."""
+        self.ensure_one()
+        parent = self.reply_to_message_id
+        if not parent:
+            return self.env['mail.message']
+        if parent.mail_message_id:
+            return parent.mail_message_id
+
+        parent_mail_message = parent._find_existing_discuss_mail_message()
+        if parent_mail_message:
+            parent.sudo().write({'mail_message_id': parent_mail_message.id})
+            return parent_mail_message
+        return self.env['mail.message']
+
+    def _backfill_missing_mail_message_id(self):
+        """Safely link existing Discuss messages to missing WAHA records.
+
+        Only unique matches are linked; ambiguous candidates are logged and left
+        untouched to avoid corrupting reply threading.
+        """
+        repaired = self.env['waha.message']
+        for message in self.filtered(lambda m: not m.mail_message_id):
+            mail_message = message._find_existing_discuss_mail_message()
+            if mail_message:
+                message.sudo().write({'mail_message_id': mail_message.id})
+                repaired |= message
+        return repaired
+
     @api.depends('waha_chat_id', 'waha_partner_id', 'state', 'body', 'wa_account_id')
     def _compute_msg_uid(self):
         """

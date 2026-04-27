@@ -495,3 +495,59 @@ class TestDiscussMessagePostBridge(WahaTestCommon):
         ], limit=1)
         self.assertEqual(child_waha.reply_to_message_id, parent_waha)
         self.assertEqual(child_waha.reply_to_msg_uid, parent_waha.msg_uid)
+
+
+    def test_inbound_reply_uses_existing_unlinked_outbound_parent_mail(self):
+        chat = self.make_waha_chat('5491100006003@c.us')
+        self.make_waha_partner(phone='5491100006003')
+        parent_mail = chat.discuss_channel_id.with_context(skip_whatsapp_send=True).message_post(
+            body='Parent from Odoo without link',
+            author_id=self.env.user.partner_id.id,
+        )
+        parent_waha = self.env['waha.message'].create({
+            'wa_account_id': self.account.id,
+            'msg_uid': 'true_5491100006003@c.us_parent_unlinked',
+            'body': 'Parent from Odoo without link',
+            'message_type': 'outbound',
+            'state': 'sent',
+            'raw_chat_id': '5491100006003@c.us',
+            'raw_sender_phone': '5491100006003',
+        })
+        self.assertFalse(parent_waha.mail_message_id)
+
+        reply = self.env['waha.message'].create({
+            'wa_account_id': self.account.id,
+            'msg_uid': 'false_5491100006003@c.us_reply_child',
+            'body': 'Customer reply',
+            'message_type': 'inbound',
+            'state': 'received',
+            'raw_chat_id': '5491100006003@c.us',
+            'raw_sender_phone': '5491100006003',
+            'reply_to_message_id': parent_waha.id,
+            'reply_to_msg_uid': parent_waha.msg_uid,
+        })
+
+        self.assertEqual(parent_waha.mail_message_id, parent_mail)
+        self.assertEqual(reply.mail_message_id.parent_id, parent_mail)
+
+    def test_backfill_missing_mail_message_id_ignores_ambiguous_matches(self):
+        chat = self.make_waha_chat('5491100006004@c.us')
+        for _idx in range(2):
+            chat.discuss_channel_id.with_context(skip_whatsapp_send=True).message_post(
+                body='Ambiguous parent',
+                author_id=self.env.user.partner_id.id,
+            )
+        parent_waha = self.env['waha.message'].create({
+            'wa_account_id': self.account.id,
+            'msg_uid': 'true_5491100006004@c.us_parent_ambiguous',
+            'body': 'Ambiguous parent',
+            'message_type': 'outbound',
+            'state': 'sent',
+            'raw_chat_id': '5491100006004@c.us',
+            'raw_sender_phone': '5491100006004',
+        })
+
+        repaired = parent_waha._backfill_missing_mail_message_id()
+
+        self.assertFalse(repaired)
+        self.assertFalse(parent_waha.mail_message_id)
