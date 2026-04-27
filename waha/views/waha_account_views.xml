@@ -41,7 +41,7 @@
                     <div invisible="not qr_code" class="mt-3 mb-3">
                         <div class="text-center">
                             <field name="qr_code" widget="image" class="mb-3" options="{'size': [300, 300]}"/>
-                            <div class="alert alert-info">
+                            <div class="alert alert-info" role="alert">
                                 <strong>Scan this QR code with WhatsApp</strong><br/>
                                 Open WhatsApp &gt; Settings &gt; Linked Devices &gt; Link a Device
                             </div>
@@ -77,7 +77,7 @@
         </field>
     </record>
 
-    <!-- WAHA Account Tree View -->
+    <!-- WAHA Account List View -->
     <record id="view_waha_account_tree" model="ir.ui.view">
         <field name="name">waha.account.tree</field>
         <field name="model">waha.account</field>
@@ -131,10 +131,10 @@
                             </div>
                             <div class="o_kanban_record_bottom">
                                 <div class="oe_kanban_bottom_left">
-                                    <i class="fa fa-phone"/> <field name="phone_uid"/>
+                                    <i class="fa fa-phone" title="Phone"/> <field name="phone_uid"/>
                                 </div>
                                 <div class="oe_kanban_bottom_right">
-                                    <i class="fa fa-commenting"/> <field name="templates_count"/> templates
+                                    <i class="fa fa-commenting" title="Templates"/> <field name="templates_count"/> templates
                                 </div>
                             </div>
                         </div>

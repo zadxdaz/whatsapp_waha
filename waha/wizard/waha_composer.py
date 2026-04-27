@@ -25,7 +25,7 @@ class WahaComposer(models.TransientModel):
     use_template = fields.Boolean('Use Template', default=False)
     
     # Message content
-    body = fields.Html('Message', required=True, sanitize=False)
+    body = fields.Text('Message', required=True)
     
     # Attachments
     attachment_ids = fields.Many2many(
@@ -41,7 +41,7 @@ class WahaComposer(models.TransientModel):
     res_id = fields.Integer('Related Record ID')
     
     # Preview
-    preview_body = fields.Html('Preview', compute='_compute_preview_body')
+    preview_body = fields.Text('Preview', compute='_compute_preview_body')
 
     @api.depends('mobile_number')
     def _compute_mobile_number_formatted(self):
@@ -97,79 +97,44 @@ class WahaComposer(models.TransientModel):
         if not self.body:
             raise ValidationError(_('Message body is required'))
         
-        # Clean HTML tags from body
-        import re
-        clean_body = re.sub(r'<[^>]+>', '', (self.preview_body or self.body)).strip()
+        # Get body content (already plain text)
+        clean_body = (self.preview_body or self.body or '').strip()
         
         # Normalize phone number
         normalized_phone = self.mobile_number.replace('+', '').replace(' ', '').replace('-', '')
-        
-        # Find or create chat
         chat_id = f"{normalized_phone}@c.us"
-        chat = self.env['waha.chat'].find_or_create(
-            wa_account=self.wa_account_id,
-            chat_id=chat_id,
-            partner=None
-        )
         
-        # Find or create partner
-        partner = self.env['waha.partner'].find_or_create_by_lid_or_phone(
-            lid=None,
-            phone=normalized_phone,
-            wa_account=self.wa_account_id,
-            auto_enrich=True
-        )
-        
-        # Prepare message data using new structure
+        # Prepare message data
+        # waha_chat_id and waha_partner_id will be auto-computed from raw fields
         message_vals = {
             'wa_account_id': self.wa_account_id.id,
             'raw_chat_id': chat_id,
             'raw_sender_phone': normalized_phone,
             'body': clean_body,
             'message_type': 'outbound',
-            'state': 'outgoing',
+            'state': 'outgoing',  # Will trigger auto-send via _compute_msg_uid
         }
         
         if self.wa_template_id:
             message_vals['wa_template_id'] = self.wa_template_id.id
         
-        # Create message (auto-computes waha_chat_id, partner_id, mail_message_id)
+        # Create message
+        # This will auto-compute: waha_chat_id, waha_partner_id, mail_message_id, and msg_uid (send)
         message = self.env['waha.message'].create(message_vals)
         
-        # Link to mail.message if we have a related record
-        if self.res_model and self.res_id:
-            try:
-                record = self.env[self.res_model].browse(self.res_id)
-                mail_message = record.message_post(
-                    body=clean_body,
-                    message_type='comment',
-                    subtype_xmlid='mail.mt_comment',
-                    author_id=self.env.user.partner_id.id,
-                )
-                message.mail_message_id = mail_message.id
-            except Exception:
-                pass
-        
-        # Handle attachments
+        # Handle attachments - link them to the message
         if self.attachment_ids:
-            # Link attachments to message
             self.attachment_ids.write({
                 'res_model': 'waha.message',
                 'res_id': message.id,
             })
-            
-            # Update content type if has attachments
-            message.content_type = 'document'
-        
-        # Note: Message will be auto-sent via _compute_msg_uid
-        # because state is 'outgoing' and all required fields are set
         
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
                 'title': _('Success'),
-                'message': _('WhatsApp message queued for sending'),
+                'message': _('WhatsApp message sent successfully'),
                 'type': 'success',
                 'sticky': False,
             }
@@ -179,23 +144,19 @@ class WahaComposer(models.TransientModel):
         """Schedule message to be sent later"""
         self.ensure_one()
         
+        # Get body content (already plain text)
+        clean_body = (self.preview_body or self.body or '').strip()
+        
         # Normalize phone number
         normalized_phone = self.mobile_number.replace('+', '').replace(' ', '').replace('-', '')
-        
-        # Find or create chat
         chat_id = f"{normalized_phone}@c.us"
-        chat = self.env['waha.chat'].find_or_create(
-            wa_account=self.wa_account_id,
-            chat_id=chat_id,
-            partner=None
-        )
         
         # Create message in draft state (won't auto-send)
         message_vals = {
             'wa_account_id': self.wa_account_id.id,
             'raw_chat_id': chat_id,
             'raw_sender_phone': normalized_phone,
-            'body': self.preview_body or self.body,
+            'body': clean_body,
             'message_type': 'outbound',
             'state': 'draft',  # Draft state prevents auto-send
         }
@@ -203,14 +164,22 @@ class WahaComposer(models.TransientModel):
         if self.wa_template_id:
             message_vals['wa_template_id'] = self.wa_template_id.id
         
+        # Create message - waha_chat_id and waha_partner_id auto-computed
         message = self.env['waha.message'].create(message_vals)
+        
+        # Handle attachments
+        if self.attachment_ids:
+            self.attachment_ids.write({
+                'res_model': 'waha.message',
+                'res_id': message.id,
+            })
         
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
                 'title': _('Scheduled'),
-                'message': _('Message scheduled to be sent'),
+                'message': _('Message scheduled. Change state to "Sending" to send it.'),
                 'type': 'info',
                 'sticky': False,
             }

@@ -468,6 +468,42 @@ class WahaApi:
         except Exception as e:
             _logger.warning('Could not get contact from WAHA (non-critical): %s', str(e))
             return None
+    
+    def get_contact_id_by_lid(self, lid):
+        """
+        Get full contact information including contact ID using LID
+        
+        Args:
+            lid: WhatsApp LID (with or without @lid suffix)
+        
+        Returns:
+            dict with contact information including 'id' field, or None if not found
+        """
+        try:
+            # Clean LID - remove suffixes
+            normalized_lid = str(lid).replace('+', '').replace(' ', '')
+            for suffix in ['@c.us', '@lid', '@g.us']:
+                if normalized_lid.endswith(suffix):
+                    normalized_lid = normalized_lid.replace(suffix, '')
+                    break
+            
+            _logger.info('Getting contact ID for LID: %s', normalized_lid)
+            
+            # Use LID-specific endpoint: GET /api/{session}/lids/{lid}
+            result = self._make_request(
+                'GET',
+                f'/api/{self.session_name}/lids/{normalized_lid}'
+            )
+            
+            if result:
+                _logger.info('Got contact info from LID endpoint: %s', result)
+                return result
+            
+            return None
+            
+        except Exception as e:
+            _logger.warning('Could not get contact ID for LID %s: %s', lid, str(e))
+            return None
 
     def get_contact_profile_picture(self, contact_id):
         """Get contact's profile picture URL

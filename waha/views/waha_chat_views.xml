@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- Tree View -->
+    <!-- List View -->
     <record id="view_waha_chat_tree" model="ir.ui.view">
         <field name="name">waha.chat.tree</field>
         <field name="model">waha.chat</field>
@@ -24,6 +24,11 @@
         <field name="arch" type="xml">
             <form string="WhatsApp Chat">
                 <header>
+                    <button name="action_sync_messages_from_waha" 
+                            string="Sync Last 100 Messages" 
+                            type="object"
+                            class="btn-primary"
+                            help="Fetch last 100 messages from WhatsApp and sort chronologically"/>
                     <button name="sync_group_participants_from_waha" 
                             string="Sync Participants" 
                             type="object"

@@ -1,8 +1,11 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import logging
+from datetime import datetime
+
 from odoo import models, fields, api, _
 from odoo.exceptions import ValidationError, UserError
+from odoo.addons.waha.tools.waha_api import WahaApi
 
 _logger = logging.getLogger(__name__)
 
@@ -115,43 +118,16 @@ class WahaChat(models.Model):
     
     @api.depends('wa_chat_id', 'wa_account_id', 'name', 'partner_id')
     def _compute_discuss_channel_id(self):
-        """
-        Auto-compute discuss channel relationship
-        
-        Searches for existing channel or creates one if missing
-        """
+        """Pure lookup — never creates a channel."""
         for chat in self:
             if not chat.wa_chat_id or not chat.wa_account_id:
                 chat.discuss_channel_id = False
                 continue
-            
-            # Search for existing channel
-            channel = self.env['discuss.channel'].sudo().search([
+            chat.discuss_channel_id = self.env['discuss.channel'].sudo().search([
                 ('wa_chat_id', '=', chat.wa_chat_id),
                 ('is_whatsapp', '=', True),
                 ('whatsapp_account_id', '=', chat.wa_account_id.id),
             ], limit=1)
-            
-            if channel:
-                chat.discuss_channel_id = channel
-            else:
-                # Auto-create channel if missing
-                _logger.info('Auto-creating discuss.channel for chat: %s', chat.wa_chat_id)
-                
-                channel_vals = {
-                    'name': chat._get_channel_name(),
-                    'channel_type': 'whatsapp',  # WhatsApp conversation type
-                    'description': chat.wa_chat_id,
-                    'is_whatsapp': True,
-                    'whatsapp_account_id': chat.wa_account_id.id,
-                    'wa_chat_id': chat.wa_chat_id,
-                }
-                
-                channel = self.env['discuss.channel'].sudo().create(channel_vals)
-                chat.discuss_channel_id = channel
-                
-                # Add initial members
-                chat._sync_channel_members()
     
     @api.depends('wa_chat_id', 'chat_type')
     def _compute_partner_id(self):
@@ -205,9 +181,8 @@ class WahaChat(models.Model):
             
             # Auto-fetch participants from WAHA
             try:
-                from odoo.addons.waha.tools.waha_api import WahaApi
                 api = WahaApi(chat.wa_account_id)
-                
+
                 _logger.info('Auto-fetching group participants for chat %s', chat.wa_chat_id)
                 group_info = api.get_group_info(chat.wa_chat_id)
                 
@@ -284,7 +259,6 @@ class WahaChat(models.Model):
     def _get_group_name_from_waha(self, wa_account, chat_id):
         """Get group name from WAHA API"""
         try:
-            from odoo.addons.waha.tools.waha_api import WahaApi
             api = WahaApi(wa_account)
             group_info = api.get_group_info(chat_id)
             
@@ -436,9 +410,8 @@ class WahaChat(models.Model):
             return
         
         try:
-            from odoo.addons.waha.tools.waha_api import WahaApi
             api = WahaApi(self.wa_account_id)
-            
+
             # Get group info
             group_info = api.get_group_info(self.wa_chat_id)
             
@@ -558,9 +531,8 @@ class WahaChat(models.Model):
             raise UserError(_('This action is only available for group chats'))
         
         try:
-            from odoo.addons.waha.tools.waha_api import WahaApi
             api = WahaApi(self.wa_account_id)
-            
+
             # Get group info from WAHA
             _logger.info('Fetching group participants for chat %s from WAHA', self.wa_chat_id)
             group_info = api.get_group_info(self.wa_chat_id)
@@ -657,3 +629,224 @@ class WahaChat(models.Model):
                 'sticky': False,
             }
         }
+    
+    def action_sync_messages_from_waha(self):
+        """Fetch all messages from WAHA since the most recent one in database"""
+        self.ensure_one()
+        
+        if not self.wa_account_id or self.wa_account_id.status != 'connected':
+            raise UserError(_('WhatsApp account is not connected'))
+        
+        try:
+            api = WahaApi(self.wa_account_id)
+            
+            # Find most recent message we have for this chat
+            most_recent_msg = self.env['waha.message'].search([
+                ('waha_chat_id', '=', self.id),
+                ('wa_timestamp', '!=', False)
+            ], order='wa_timestamp desc', limit=1)
+            
+            if most_recent_msg:
+                _logger.info('Most recent message timestamp: %s', most_recent_msg.wa_timestamp)
+                _logger.info('Fetching all messages newer than %s for chat %s', 
+                           most_recent_msg.wa_timestamp, self.wa_chat_id)
+            else:
+                _logger.info('No existing messages, fetching all available messages for chat %s', 
+                           self.wa_chat_id)
+            
+            # Fetch messages in batches (WAHA has a max limit per request)
+            all_messages_data = []
+            batch_size = 1000
+            downloaded_all = False
+            
+            while not downloaded_all:
+                messages_data = api.get_messages(self.wa_chat_id, limit=batch_size)
+                
+                if not messages_data:
+                    downloaded_all = True
+                    break
+                
+                # Filter messages newer than our most recent one
+                if most_recent_msg:
+                    # Convert most_recent timestamp to Unix timestamp for comparison
+                    cutoff_timestamp = int(most_recent_msg.wa_timestamp.timestamp())
+                    new_messages = [
+                        msg for msg in messages_data 
+                        if msg.get('timestamp') and int(msg.get('timestamp')) > cutoff_timestamp
+                    ]
+                    all_messages_data.extend(new_messages)
+                    
+                    # If we got fewer new messages than batch size, we've reached the cutoff
+                    if len(new_messages) < len(messages_data):
+                        downloaded_all = True
+                else:
+                    # No cutoff, take all messages
+                    all_messages_data.extend(messages_data)
+                    
+                    # If we got fewer than batch size, we've reached the end
+                    if len(messages_data) < batch_size:
+                        downloaded_all = True
+                
+                _logger.info('Fetched batch of %d messages, total so far: %d', 
+                           len(messages_data), len(all_messages_data))
+            
+            if not all_messages_data:
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': _('No New Messages'),
+                        'message': _('No new messages found for this chat'),
+                        'type': 'info',
+                        'sticky': False,
+                    }
+                }
+            
+            # Sort messages by timestamp (oldest first) so IDs match chronological order
+            all_messages_data.sort(key=lambda msg: int(msg.get('timestamp', 0)))
+            _logger.info('Sorted %d messages chronologically for creation', len(all_messages_data))
+            
+            created_count = 0
+            skipped_count = 0
+            
+            for msg_data in all_messages_data:
+                msg_uid = msg_data.get('id')
+                
+                # Skip if already exists
+                existing = self.env['waha.message'].search([
+                    ('msg_uid', '=', msg_uid),
+                    ('wa_account_id', '=', self.wa_account_id.id)
+                ], limit=1)
+                
+                if existing:
+                    skipped_count += 1
+                    continue
+                
+                # Extract context
+                context = self._extract_message_context_from_api(msg_data)
+                
+                # Create message
+                vals = {
+                    'msg_uid': context['msg_uid'],
+                    'wa_account_id': self.wa_account_id.id,
+                    'message_type': 'outbound' if context['from_me'] else 'inbound',
+                    'state': 'sent' if context['from_me'] else 'received',
+                    'body': context['body'],
+                    'raw_chat_id': context['chat_id'],
+                    'raw_sender_lid': context['sender_lid'],
+                    'raw_sender_phone': context['sender_phone'],
+                    'wa_timestamp': context['wa_timestamp'],
+                    'raw_payload': msg_data if isinstance(msg_data, dict) else {},
+                }
+                
+                if context.get('participant'):
+                    vals['participant_id'] = context['participant']
+                
+                message = self.env['waha.message'].create(vals)
+                message.process_payload_media()
+                created_count += 1
+                
+                _logger.info('Created message %s from API sync', message.id)
+            
+            # Sort all channel messages chronologically
+            if self.discuss_channel_id:
+                self._sort_channel_messages()
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _('Messages Synced'),
+                    'message': _('%d new messages imported, %d already existed. Channel messages sorted chronologically.') % (created_count, skipped_count),
+                    'type': 'success',
+                    'sticky': False,
+                }
+            }
+            
+        except Exception as e:
+            error_msg = str(e)
+            _logger.error('Failed to sync messages: %s', error_msg)
+            raise UserError(_('Failed to sync messages: %s') % error_msg)
+    
+    def _extract_message_context_from_api(self, msg_data):
+        """Extract message context from WAHA API response (similar to webhook)"""
+        from_raw = msg_data.get('from', '')
+        from_me = msg_data.get('fromMe', False)
+        participant = msg_data.get('participant', '')
+        
+        is_group = '@g.us' in from_raw
+        chat_id = from_raw
+        
+        sender_raw = participant if (is_group and participant) else from_raw
+        
+        sender_lid = None
+        sender_phone = None
+        
+        if '@lid' in sender_raw:
+            sender_lid = sender_raw.split('@')[0]
+        elif '@c.us' in sender_raw:
+            sender_phone = sender_raw.split('@')[0]
+        else:
+            sender_phone = sender_raw.split('@')[0] if '@' in sender_raw else sender_raw
+        
+        body = msg_data.get('body', '')
+        if isinstance(body, dict):
+            body = body.get('text', '') or str(body)
+        elif not isinstance(body, str):
+            body = str(body) if body else ''
+        
+        timestamp_value = msg_data.get('timestamp')
+        wa_timestamp = None
+        if timestamp_value:
+            try:
+                wa_timestamp = datetime.fromtimestamp(int(timestamp_value))
+            except (ValueError, TypeError):
+                wa_timestamp = fields.Datetime.now()
+        
+        return {
+            'msg_uid': msg_data.get('id'),
+            'from_me': from_me,
+            'chat_id': chat_id,
+            'is_group': is_group,
+            'sender_lid': sender_lid,
+            'sender_phone': sender_phone,
+            'participant': participant,
+            'body': body,
+            'wa_timestamp': wa_timestamp,
+        }
+    
+    def _sort_channel_messages(self):
+        """Sort all messages in the discuss channel chronologically (oldest first)"""
+        self.ensure_one()
+        
+        if not self.discuss_channel_id:
+            return
+        
+        # Get all waha.message records for this chat, ordered by timestamp
+        waha_messages = self.env['waha.message'].search([
+            ('waha_chat_id', '=', self.id),
+            ('mail_message_id', '!=', False),
+        ], order='wa_timestamp asc, id asc')
+        
+        if not waha_messages:
+            _logger.warning('No waha messages with mail_message_id found for chat %s', self.id)
+            return
+        
+        _logger.info('Sorting %d messages for channel %s chronologically (oldest first)', 
+                    len(waha_messages), self.discuss_channel_id.id)
+        
+        # Update each mail.message date to match wa_timestamp order
+        # Add a small increment to ensure proper ordering even for same-second messages
+        for index, waha_msg in enumerate(waha_messages):
+            if waha_msg.mail_message_id and waha_msg.wa_timestamp:
+                # Use wa_timestamp and add microseconds based on index to ensure unique ordering
+                new_date = waha_msg.wa_timestamp.replace(microsecond=index * 1000)
+                
+                if waha_msg.mail_message_id.date != new_date:
+                    waha_msg.mail_message_id.sudo().write({'date': new_date})
+                    _logger.debug('Updated message %s date to %s', 
+                                waha_msg.mail_message_id.id, new_date)
+        
+        # Force channel to refresh message cache
+        self.discuss_channel_id.invalidate_recordset(['message_ids'])
+        _logger.info('Channel messages sorted and cache invalidated')

@@ -7,6 +7,7 @@ from datetime import datetime
 
 from odoo import models, fields, api, _
 from odoo.exceptions import ValidationError, UserError
+from odoo.addons.waha.tools.waha_api import WahaApi
 
 _logger = logging.getLogger(__name__)
 
@@ -202,6 +203,47 @@ class WahaMessage(models.Model):
          'unique(msg_uid, wa_account_id)',
          "Each WhatsApp message ID must be unique per account.")
     ]
+    
+    @api.constrains('waha_chat_id', 'mail_message_id')
+    def _check_chat_channel_consistency(self):
+        """
+        Ensure all messages from the same chat are in the same discuss channel
+        
+        This prevents data inconsistency where messages from one WhatsApp chat
+        could end up in different discuss channels.
+        """
+        for message in self:
+            if not message.waha_chat_id or not message.mail_message_id:
+                continue
+            
+            # Get the channel from mail_message
+            message_channel = message.mail_message_id.model == 'discuss.channel' and \
+                            self.env['discuss.channel'].browse(message.mail_message_id.res_id)
+            
+            if not message_channel:
+                continue
+            
+            # Get expected channel from waha_chat
+            expected_channel = message.waha_chat_id.discuss_channel_id
+            
+            if not expected_channel:
+                continue
+            
+            # Validate they match
+            if message_channel.id != expected_channel.id:
+                raise ValidationError(_(
+                    'Message consistency error: Messages from chat "%s" (ID: %s) must all be in the same discuss channel.\n'
+                    'Expected channel: "%s" (ID: %s)\n'
+                    'Found channel: "%s" (ID: %s)\n\n'
+                    'All messages from the same WhatsApp chat must belong to the same discuss channel.'
+                ) % (
+                    message.waha_chat_id.name,
+                    message.waha_chat_id.id,
+                    expected_channel.name,
+                    expected_channel.id,
+                    message_channel.name,
+                    message_channel.id
+                ))
 
     # ============================================================
     # COMPUTED FIELDS - AUTO RELATIONSHIPS
@@ -383,6 +425,9 @@ class WahaMessage(models.Model):
         - waha_chat_id exists (with discuss_channel_id)
         - waha_partner_id exists (message author)
         - No mail_message_id exists yet
+        
+        IMPORTANT: Always uses waha_chat_id.discuss_channel_id as the target channel.
+        This ensures all messages from the same chat are in the same channel.
         """
         for message in self:
             # Skip if already has mail_message_id
@@ -404,14 +449,15 @@ class WahaMessage(models.Model):
                 message.mail_message_id = False
                 continue
             
-            # Get discuss channel from chat
+            # CRITICAL: Always use the chat's discuss_channel_id
+            # This is the ONLY valid channel for messages from this chat
             discuss_channel = message.waha_chat_id.discuss_channel_id
             if not discuss_channel:
                 _logger.warning('Chat %s has no discuss_channel_id', message.waha_chat_id.id)
                 message.mail_message_id = False
                 continue
             
-            _logger.info('Discuss channel found: %s (id=%s, type=%s)', 
+            _logger.info('Using chat channel: %s (id=%s, type=%s)', 
                         discuss_channel.name, 
                         discuss_channel.id,
                         discuss_channel.channel_type)
@@ -525,9 +571,8 @@ class WahaMessage(models.Model):
             )
             
             try:
-                from odoo.addons.waha.tools.waha_api import WahaApi
                 api = WahaApi(message.wa_account_id)
-                
+
                 # Prepare message data
                 chat_wa_id = message.waha_chat_id.wa_chat_id
                 body_clean = re.sub(r'<[^>]+>', '', message.body or '').strip()
@@ -654,7 +699,7 @@ class WahaMessage(models.Model):
         is computed automatically. Just triggers recomputation.
         
         Args:
-            discuss_channel: Optional, for compatibility (not used)
+            discuss_channel: Optional, ignored. Always uses waha_chat_id.discuss_channel_id
             author_partner: Optional, for compatibility (not used)
             
         Returns:
@@ -662,7 +707,21 @@ class WahaMessage(models.Model):
         """
         self.ensure_one()
         
-        # Force recomputation of mail_message_id
+        # Validate channel if provided - must match chat's channel
+        if discuss_channel and self.waha_chat_id and self.waha_chat_id.discuss_channel_id:
+            if discuss_channel.id != self.waha_chat_id.discuss_channel_id.id:
+                raise ValidationError(_(
+                    'Cannot create message in channel "%s" (ID: %s). '
+                    'Messages from chat "%s" must be in channel "%s" (ID: %s).'
+                ) % (
+                    discuss_channel.name,
+                    discuss_channel.id,
+                    self.waha_chat_id.name,
+                    self.waha_chat_id.discuss_channel_id.name,
+                    self.waha_chat_id.discuss_channel_id.id
+                ))
+        
+        # Force recomputation of mail_message_id (uses chat's channel)
         self._compute_mail_message_id()
         
         return self.mail_message_id
@@ -992,9 +1051,8 @@ class WahaMessage(models.Model):
         _logger.info('Manually sending message %s through WAHA', self.id)
         
         try:
-            from odoo.addons.waha.tools.waha_api import WahaApi
             api = WahaApi(self.wa_account_id)
-            
+
             # Prepare message data
             chat_wa_id = self.waha_chat_id.wa_chat_id
             body_clean = re.sub(r'<[^>]+>', '', self.body).strip()
@@ -1100,15 +1158,25 @@ class WahaMessage(models.Model):
     def action_retry_send(self):
         """Retry sending failed messages"""
         for message in self:
-            if message.state == 'error' and message.message_type == 'outbound':
-                # Reset to outgoing to trigger auto-send via compute
-                message.write({
-                    'state': 'outgoing',
-                    'failure_type': False,
-                    'failure_reason': False,
-                })
-                # Force recomputation of msg_uid (will auto-send)
-                message._compute_msg_uid()
+            if message.state != 'error' or message.message_type != 'outbound':
+                continue
+            
+            _logger.info('Retrying send for message %s', message.id)
+            
+            # Clear previous error state (but keep mail_message_id to prevent duplicates)
+            message.write({
+                'state': 'outgoing',
+                'failure_type': False,
+                'failure_reason': False,
+                'msg_uid': False,  # Clear to allow resend
+            })
+            
+            # Send directly (don't use compute to avoid side effects)
+            try:
+                message._send_through_waha()
+                _logger.info('Message %s resent successfully', message.id)
+            except Exception as e:
+                _logger.error('Retry failed for message %s: %s', message.id, str(e))
     
     def action_view_discuss_message(self):
         """Open linked discuss message"""

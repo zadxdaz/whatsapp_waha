@@ -84,7 +84,7 @@
         </field>
     </record>
 
-    <!-- WAHA Message Tree View -->
+    <!-- WAHA Message List View -->
     <record id="view_waha_message_tree" model="ir.ui.view">
         <field name="name">waha.message.tree</field>
         <field name="model">waha.message</field>

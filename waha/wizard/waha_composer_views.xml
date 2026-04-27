@@ -26,7 +26,7 @@
                     <notebook>
                         <page string="Message" name="message">
                             <group>
-                                <field name="body" nolabel="1" widget="html"
+                                <field name="body" nolabel="1" widget="text"
                                        placeholder="Type your WhatsApp message here..."
                                        readonly="use_template"/>
                             </group>
@@ -34,11 +34,11 @@
 
                         <page string="Preview" name="preview">
                             <group>
-                                <div class="alert alert-info">
+                                <div class="alert alert-info" role="alert">
                                     <strong>Message Preview</strong><br/>
                                     This is how your message will appear with variables replaced.
                                 </div>
-                                <field name="preview_body" nolabel="1" widget="html" readonly="1"/>
+                                <field name="preview_body" nolabel="1" widget="text" readonly="1"/>
                             </group>
                         </page>
 

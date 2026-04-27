@@ -50,3 +50,6 @@ Thumbs.db
 *.bak
 *.backup
 *.orig
+
+# Codex local marker
+.codex

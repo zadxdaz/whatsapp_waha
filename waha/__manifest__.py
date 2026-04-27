@@ -4,7 +4,7 @@
     'name': 'WAHA Messaging',
     'category': 'Marketing/WhatsApp',
     'summary': 'WhatsApp Integration using WAHA (WhatsApp HTTP API)',
-    'version': '1.2',
+    'version': '18.0.1.2',
     'description': """
         This module integrates Odoo with WAHA (WhatsApp HTTP API) to use WhatsApp messaging service.
         WAHA is a self-hosted WhatsApp HTTP API that you can run on your own server.
@@ -47,6 +47,8 @@
             'waha/static/src/core/public_web/discuss_app_model_patch.js',
             'waha/static/src/core/public_web/thread_model_patch.js',
             'waha/static/src/core/web/discuss_app_category_model_patch.js',
+            'waha/static/src/core/web/discuss_sidebar_categories_waha.js',
+            'waha/static/src/core/web/waha_core_web_service.js',
             'waha/static/src/scss/waha_discuss.scss',
         ],
     },

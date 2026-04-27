@@ -92,7 +92,7 @@
         </field>
     </record>
 
-    <!-- WAHA Template Tree View -->
+    <!-- WAHA Template List View -->
     <record id="view_waha_template_tree" model="ir.ui.view">
         <field name="name">waha.template.tree</field>
         <field name="model">waha.template</field>
@@ -140,7 +140,7 @@
                                 </div>
                                 <div class="oe_kanban_bottom_right">
                                     <span class="badge badge-pill">
-                                        <i class="fa fa-envelope"/> <field name="messages_count"/>
+                                        <i class="fa fa-envelope" title="Messages"/> <field name="messages_count"/>
                                     </span>
                                 </div>
                             </div>

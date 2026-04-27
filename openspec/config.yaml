@@ -1,0 +1,27 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Odoo custom addon (Python, XML views/data, OWL JavaScript assets, SCSS) for WAHA WhatsApp integration.
+  Architecture: Addon lives under waha/ and integrates with mail/discuss through models, controllers, wizard, assets, data, security, and tests.
+  Testing: Odoo TransactionCase tests under waha/tests. Run with Odoo test runner when an Odoo 18 service/database is available.
+  Style: Odoo addon conventions; XML data/view validation; no standalone Python test runner detected in this module checkout.
+
+strict_tdd: false
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Identify affected modules/packages
+  specs:
+    - Use Given/When/Then format for scenarios
+    - Use RFC 2119 keywords
+  design:
+    - Document Odoo version-specific compatibility decisions
+  tasks:
+    - Group tasks by phase and keep migration steps small
+  apply:
+    - Follow existing Odoo addon patterns and Odoo 18 conventions
+  verify:
+    - Run static checks locally and Odoo tests if an Odoo 18 runtime is available
+  archive:
+    - Warn before merging destructive deltas

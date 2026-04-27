@@ -46,10 +46,11 @@ class WahaPartner(models.Model):
     )
     
     phone_number = fields.Char(
+        related='partner_id.mobile',
         string="Phone Number",
-        required=False,
-        index=True,
-        help="Normalized phone number (E.164 format without +)"
+        readonly=True,
+        store=True,
+        help="Phone number from partner (E.164 format)"
     )
     
     lid = fields.Char(
@@ -63,20 +64,11 @@ class WahaPartner(models.Model):
     
     wa_contact_id = fields.Char(
         string="WhatsApp Contact ID",
-        help="WAHA contact identifier (e.g., 123456@c.us or 123456@lid)"
+        index=True,
+        help="WAHA contact identifier from API (e.g., 123456@c.us or 123456@lid)"
     )
     
     # WhatsApp-specific fields
-    wa_name = fields.Char(
-        string="WhatsApp Name",
-        help="Name as it appears in WhatsApp"
-    )
-    
-    wa_pushname = fields.Char(
-        string="Push Name",
-        help="Name set by the user in their WhatsApp profile"
-    )
-    
     wa_status = fields.Text(
         string="WhatsApp Status",
         help="Contact's WhatsApp status message"
@@ -108,16 +100,13 @@ class WahaPartner(models.Model):
         ('unique_partner_per_account',
          'unique(partner_id, wa_account_id)',
          "Each partner can only have one WhatsApp contact per account."),
-        ('check_phone_or_lid',
-         'CHECK(phone_number IS NOT NULL OR lid IS NOT NULL)',
-         "At least one of phone_number or LID must be set.")
     ]
 
     # ============================================================
     # COMPUTED FIELDS - LID/PHONE RELATIONSHIP
     # ============================================================
     
-    @api.depends('phone_number', 'wa_account_id')
+    @api.depends('partner_id.mobile', 'partner_id.phone', 'wa_account_id')
     def _compute_lid(self):
         """
         Auto-compute LID from phone_number using WAHA API
@@ -134,20 +123,20 @@ class WahaPartner(models.Model):
                 from odoo.addons.waha.tools.waha_api import WahaApi
                 api = WahaApi(partner.wa_account_id)
                 
+                # Normalize phone before API call
+                normalized = partner._normalize_phone(partner.phone_number, partner.wa_account_id)
+                if not normalized:
+                    continue
+                
                 # Get LID from phone
-                result = api.get_lid_by_phone(partner.phone_number)
+                result = api.get_lid_by_phone(normalized)
                 
                 if result and result.get('lid'):
-                    lid_value = result['lid']
-                    _logger.info('Auto-fetched LID for phone %s: %s', 
-                               partner.phone_number, lid_value)
+                    lid_value = str(result['lid']).replace('@lid', '').replace('@c.us', '').replace('@g.us', '')
+                    _logger.info('Auto-fetched LID for phone %s: %s', normalized, lid_value)
                     partner.lid = lid_value
-                    
-                    # Update wa_contact_id to use LID format
-                    if lid_value:
-                        partner.wa_contact_id = f"{lid_value}@lid"
                 else:
-                    _logger.debug('No LID found for phone %s', partner.phone_number)
+                    _logger.debug('No LID found for phone %s', normalized)
                     
             except Exception as e:
                 _logger.warning('Failed to fetch LID for phone %s: %s', 
@@ -156,11 +145,9 @@ class WahaPartner(models.Model):
     @api.onchange('lid')
     def _onchange_lid_fetch_phone(self):
         """
-        When LID is manually set, try to fetch phone_number
-        
-        This is triggered on manual entry, not during compute.
+        When LID is manually set, try to update partner phone
         """
-        if self.lid and not self.phone_number and self.wa_account_id:
+        if self.lid and not self.partner_id.mobile and self.wa_account_id:
             try:
                 from odoo.addons.waha.tools.waha_api import WahaApi
                 api = WahaApi(self.wa_account_id)
@@ -171,7 +158,7 @@ class WahaPartner(models.Model):
                 if result and result.get('pn'):
                     phone = result['pn']
                     _logger.info('Auto-fetched phone for LID %s: %s', self.lid, phone)
-                    self.phone_number = phone
+                    self.partner_id.mobile = f"+{phone}"
                     
             except Exception as e:
                 _logger.warning('Failed to fetch phone for LID %s: %s', 
@@ -251,10 +238,10 @@ class WahaPartner(models.Model):
             
             if waha_partner:
                 _logger.info('Found waha.partner by LID %s: %s', lid, waha_partner.id)
-                # Update phone if we have it and it's missing
-                if normalized_phone and not waha_partner.phone_number:
-                    _logger.info('Updating waha.partner %s with phone %s', waha_partner.id, normalized_phone)
-                    waha_partner.sudo().write({'phone_number': normalized_phone})
+                # Update partner phone if we have it and it's missing
+                if normalized_phone and not waha_partner.partner_id.mobile:
+                    _logger.info('Updating partner %s with phone %s', waha_partner.partner_id.id, normalized_phone)
+                    waha_partner.partner_id.sudo().write({'mobile': f"+{normalized_phone}"})
                 return waha_partner
         
         # 2. Try to find by phone number
@@ -274,11 +261,11 @@ class WahaPartner(models.Model):
                 return waha_partner
         
         # 3. Not found - create new partner
-        res_partner = self._create_partner_with_lid_or_phone(
+        res_partner, _ = self._create_partner_with_lid_or_phone(
             lid=lid, 
             phone=normalized_phone,  # Use normalized phone
             wa_account=wa_account, 
-            auto_enrich=False  # Already enriched above
+            auto_enrich=True  # Let it enrich with contact_info
         )
         
         # Return the waha.partner linked to the res.partner
@@ -296,45 +283,19 @@ class WahaPartner(models.Model):
         
         Args:
             lid: WhatsApp LID
-            phone: Phone number
+            phone: Phone number (already normalized)
             wa_account: waha.account record
             auto_enrich: Whether to auto-enrich from WAHA
             
         Returns:
-            res.partner record
+            tuple: (res.partner record, contact_info dict or None)
         """
-        # Normalize phone if provided
-        normalized_phone = None
-        if phone:
-            normalized_phone = self._normalize_phone(phone, wa_account)
-        
-        # If we have neither, try to fetch the missing one from WAHA
-        if lid and not normalized_phone:
-            try:
-                from odoo.addons.waha.tools.waha_api import WahaApi
-                api = WahaApi(wa_account)
-                result = api.get_phone_by_lid(lid)
-                if result and result.get('pn'):
-                    normalized_phone = result['pn']
-                    _logger.info('Fetched phone from LID: %s', normalized_phone)
-            except Exception as e:
-                _logger.warning('Could not fetch phone from LID %s: %s', lid, str(e))
-        
-        elif normalized_phone and not lid:
-            try:
-                from odoo.addons.waha.tools.waha_api import WahaApi
-                api = WahaApi(wa_account)
-                result = api.get_lid_by_phone(normalized_phone)
-                if result and result.get('lid'):
-                    # Normalize LID (remove @lid/@c.us/@g.us suffix)
-                    lid = str(result['lid']).replace('@lid', '').replace('@c.us', '').replace('@g.us', '')
-                    _logger.info('Fetched LID from phone: %s', lid)
-            except Exception as e:
-                _logger.warning('Could not fetch LID from phone %s: %s', normalized_phone, str(e))
+        normalized_phone = phone  # Already normalized by caller
         
         # Determine display name
         contact_name = None
         contact_image = None
+        contact_info = None
         
         # Try to enrich from WAHA before creating
         if auto_enrich and (normalized_phone or lid):
@@ -342,8 +303,7 @@ class WahaPartner(models.Model):
                 from odoo.addons.waha.tools.waha_api import WahaApi
                 api = WahaApi(wa_account)
                 
-                # Try to get contact info by phone or LID
-                contact_info = None
+                # Get contact info by phone or LID
                 if normalized_phone:
                     contact_info = api.get_contact(normalized_phone)
                 elif lid:
@@ -408,132 +368,44 @@ class WahaPartner(models.Model):
             if update_vals:
                 partner.sudo().write(update_vals)
         
-        # Create waha.partner link
-        wa_contact_id = None
-        if lid:
-            wa_contact_id = f"{lid}@lid"
-        elif normalized_phone:
-            wa_contact_id = f"{normalized_phone}@c.us"
+        # Check if waha.partner already exists before creating
+        existing_waha_partner = self.search([
+            ('partner_id', '=', partner.id),
+            ('wa_account_id', '=', wa_account.id),
+        ], limit=1)
         
+        if existing_waha_partner:
+            _logger.info('Found existing waha.partner %s for partner %s, updating it', 
+                        existing_waha_partner.id, partner.id)
+            
+            # Update with new data if available
+            update_vals = {}
+            if lid and not existing_waha_partner.lid:
+                update_vals['lid'] = lid
+            
+            if update_vals:
+                existing_waha_partner.sudo().write(update_vals)
+                _logger.info('Updated waha.partner %s with new data', existing_waha_partner.id)
+            
+            return partner, contact_info
+        
+        # Create waha.partner link
         waha_partner_vals = {
             'partner_id': partner.id,
             'wa_account_id': wa_account.id,
         }
-        
-        if normalized_phone:
-            waha_partner_vals['phone_number'] = normalized_phone
         
         if lid:
             waha_partner_vals['lid'] = lid
         
-        if wa_contact_id:
-            waha_partner_vals['wa_contact_id'] = wa_contact_id
-        
         waha_partner = self.create(waha_partner_vals)
         _logger.info('Created waha.partner link %s', waha_partner.id)
         
-        # Enrich if requested
+        # Enrich if requested (reuse contact_info to avoid duplicate API call)
         if auto_enrich:
-            waha_partner.enrich_from_waha()
+            waha_partner.enrich_from_waha(contact_info=contact_info)
         
-        return partner
-    
-    @api.model
-    def find_or_create_by_phone(self, phone, wa_account, auto_enrich=True):
-        """
-        Find existing partner or create new one from phone number
-        
-        Args:
-            phone: Phone number (any format)
-            wa_account: waha.account record
-            auto_enrich: Whether to automatically enrich from WAHA
-            
-        Returns:
-            res.partner record
-        """
-        # Don't create partners for group IDs
-        if '@g.us' in str(phone):
-            _logger.warning('Attempted to create partner for group ID: %s', phone)
-            return self.env['res.partner']
-        
-        # Normalize phone number
-        normalized_phone = self._normalize_phone(phone, wa_account)
-        
-        if not normalized_phone:
-            _logger.warning('Could not normalize phone: %s', phone)
-            return self.env['res.partner']
-        
-        # Search for existing waha.partner
-        waha_partner = self.search([
-            ('phone_number', '=', normalized_phone),
-            ('wa_account_id', '=', wa_account.id),
-        ], limit=1)
-        
-        if waha_partner:
-            _logger.info('Found existing waha.partner %s for phone %s', 
-                        waha_partner.id, normalized_phone)
-            return waha_partner.partner_id
-        
-        # Search for existing res.partner by phone
-        partner = self.env['res.partner'].sudo().search([
-            '|',
-            ('mobile', 'ilike', normalized_phone),
-            ('phone', 'ilike', normalized_phone),
-        ], limit=1)
-        
-        if not partner:
-            # Create new partner
-            contact_name = f"WhatsApp +{normalized_phone}"  # Default name with prefix
-            contact_image = None
-            
-            # Try to get contact info from WAHA before creating
-            if auto_enrich:
-                try:
-                    from odoo.addons.waha.tools.waha_api import WahaApi
-                    api = WahaApi(wa_account)
-                    contact_info = api.get_contact(normalized_phone)
-                    
-                    if contact_info:
-                        extracted_name = self._extract_contact_name(contact_info)
-                        if extracted_name:  # Only use if not empty
-                            contact_name = extracted_name
-                        contact_image = self._download_contact_avatar(
-                            wa_account, contact_info
-                        )
-                except Exception as e:
-                    _logger.warning('Could not enrich contact from WAHA: %s', str(e))
-            
-            # Create partner (name is guaranteed to be non-empty)
-            partner_vals = {
-                'name': contact_name,
-                'mobile': f"+{normalized_phone}",
-                'phone': f"+{normalized_phone}",
-            }
-            
-            if contact_image:
-                partner_vals['image_1920'] = contact_image
-            
-            partner = self.env['res.partner'].sudo().create(partner_vals)
-            _logger.info('Created new partner %s for phone %s', partner.id, normalized_phone)
-        
-        # Create waha.partner link
-        wa_contact_id = f"{normalized_phone}@c.us"
-        
-        waha_partner_vals = {
-            'partner_id': partner.id,
-            'wa_account_id': wa_account.id,
-            'phone_number': normalized_phone,
-            'wa_contact_id': wa_contact_id,
-        }
-        
-        waha_partner = self.create(waha_partner_vals)
-        _logger.info('Created waha.partner link %s', waha_partner.id)
-        
-        # Enrich if requested
-        if auto_enrich:
-            waha_partner.enrich_from_waha()
-        
-        return partner
+        return partner, contact_info
     
     @api.model
     def find_or_create_by_phone(self, phone, wa_account, auto_enrich=True):
@@ -602,38 +474,53 @@ class WahaPartner(models.Model):
     # ENRICHMENT FROM WAHA
     # ============================================================
     
-    def enrich_from_waha(self):
+    def enrich_from_waha(self, contact_info=None):
         """
         Enrich partner data from WAHA API
+        
+        Args:
+            contact_info: Optional dict with contact data from WAHA API.
+                         If not provided, will fetch from API.
         
         Gets: name, avatar, status, business info
         """
         self.ensure_one()
         
         try:
-            from odoo.addons.waha.tools.waha_api import WahaApi
-            api = WahaApi(self.wa_account_id)
-            
-            # Get contact info
-            contact_info = api.get_contact(self.phone_number)
+            # Use provided contact_info or fetch from API
+            if not contact_info:
+                from odoo.addons.waha.tools.waha_api import WahaApi
+                api = WahaApi(self.wa_account_id)
+                
+                identifier = self.wa_contact_id if self.wa_contact_id else (
+                    self.lid if self.lid else self._normalize_phone(self.phone_number, self.wa_account_id)
+                )
+                contact_info = api.get_contact(identifier)
             
             if not contact_info:
-                _logger.warning('No contact info returned from WAHA for %s', 
-                              self.phone_number)
+                _logger.warning('No contact info available for enrichment')
                 return
-            
             # Update waha.partner fields
             vals = {}
             
-            # Extract names
+            # Extract contact ID from API response
+            contact_id = contact_info.get('id')
+            if contact_id:
+                if isinstance(contact_id, dict):
+                    wa_contact_id = contact_id.get('_serialized', contact_id.get('user', ''))
+                else:
+                    wa_contact_id = str(contact_id)
+                
+                if wa_contact_id:
+                    vals['wa_contact_id'] = wa_contact_id
+                    _logger.info('Got wa_contact_id from WAHA: %s', wa_contact_id)
+            
+            # Extract and update partner name
             wa_name = self._extract_contact_name(contact_info)
-            pushname = contact_info.get('pushname') or contact_info.get('pushName')
-            
+            _logger.info('Extracted name from WAHA: %s', wa_name)
             if wa_name:
-                vals['wa_name'] = wa_name
-            
-            if pushname:
-                vals['wa_pushname'] = pushname
+                self.partner_id.sudo().write({'name': wa_name})
+                _logger.info('Updated partner name to: %s', wa_name)
             
             # Extract business info
             if contact_info.get('isBusiness'):
@@ -648,25 +535,11 @@ class WahaPartner(models.Model):
                     if business_profile.get('website'):
                         vals['business_website'] = business_profile['website']
             
-            # Update contact ID if available
-            contact_id = contact_info.get('id')
-            if contact_id:
-                if isinstance(contact_id, dict):
-                    vals['wa_contact_id'] = contact_id.get('_serialized', 
-                                                           contact_id.get('user', ''))
-                else:
-                    vals['wa_contact_id'] = str(contact_id)
-            
             vals['is_contact_synced'] = True
             vals['last_sync_date'] = fields.Datetime.now()
             
             self.write(vals)
             _logger.info('Enriched waha.partner %s from WAHA', self.id)
-            
-            # Update res.partner if we have better name
-            if wa_name and self.partner_id.name == self.phone_number:
-                self.partner_id.write({'name': wa_name})
-                _logger.info('Updated partner name to: %s', wa_name)
             
             # Download and update avatar
             avatar = self._download_contact_avatar(self.wa_account_id, contact_info)
@@ -691,6 +564,44 @@ class WahaPartner(models.Model):
             None
         )
     
+    def get_or_fetch_wa_contact_id(self):
+        """
+        Get wa_contact_id, fetching from WAHA if not available
+        
+        Returns:
+            str: WhatsApp contact ID or False
+        """
+        self.ensure_one()
+        
+        if self.wa_contact_id:
+            return self.wa_contact_id
+        
+        # Try to get from WAHA
+        try:
+            from odoo.addons.waha.tools.waha_api import WahaApi
+            api = WahaApi(self.wa_account_id)
+            
+            identifier = self.lid if self.lid else self._normalize_phone(self.phone_number, self.wa_account_id)
+            if not identifier:
+                return False
+            
+            contact_info = api.get_contact(identifier)
+            if contact_info:
+                contact_id = contact_info.get('id')
+                if contact_id:
+                    if isinstance(contact_id, dict):
+                        wa_contact_id = contact_id.get('_serialized', contact_id.get('user', ''))
+                    else:
+                        wa_contact_id = str(contact_id)
+                    
+                    if wa_contact_id:
+                        self.sudo().write({'wa_contact_id': wa_contact_id})
+                        return wa_contact_id
+        except Exception as e:
+            _logger.warning('Failed to fetch wa_contact_id: %s', str(e))
+        
+        return False
+    
     def _download_contact_avatar(self, wa_account, contact_info):
         """
         Download contact profile picture from WAHA
@@ -711,9 +622,15 @@ class WahaPartner(models.Model):
                 contact_id = contact_id.get('_serialized', contact_id.get('user'))
             
             if not contact_id:
-                # Build from phone number
-                phone = contact_info.get('number', self.phone_number)
-                contact_id = f"{phone}@c.us"
+                # Build from phone number or LID
+                if self.lid:
+                    contact_id = f"{self.lid}@lid"
+                elif self.phone_number:
+                    phone = self._normalize_phone(self.phone_number, wa_account)
+                    contact_id = f"{phone}@c.us" if phone else None
+                
+                if not contact_id:
+                    return False
             
             # Get profile picture URL
             profile_pic_url = api.get_contact_profile_picture(contact_id)
@@ -785,9 +702,127 @@ class WahaPartner(models.Model):
             return {'exists': False, 'error': str(e)}
     
     def refresh_contact_info(self):
-        """Manually refresh contact information from WAHA"""
+        """Manually refresh contact information from WAHA (bulk action)"""
+        success_count = 0
+        error_count = 0
+        
         for record in self:
-            record.enrich_from_waha()
+            try:
+                record.enrich_from_waha()
+                success_count += 1
+                _logger.info('Successfully refreshed contact %s', record.display_name)
+            except Exception as e:
+                error_count += 1
+                _logger.error('Failed to refresh contact %s: %s', record.display_name, str(e))
+        
+        # Show notification if called from UI (multiple records)
+        if len(self) > 1 or self.env.context.get('show_notification'):
+            if success_count > 0:
+                message = f'Refreshed {success_count} contact(s)'
+                if error_count > 0:
+                    message += f' ({error_count} failed)'
+                
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': 'Contacts Updated',
+                        'message': message,
+                        'type': 'success' if error_count == 0 else 'warning',
+                        'sticky': False,
+                    }
+                }
+            else:
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': 'Error',
+                        'message': f'Failed to refresh contacts ({error_count} errors)',
+                        'type': 'danger',
+                        'sticky': False,
+                    }
+                }
+    
+    def action_fetch_wa_contact_id(self):
+        """
+        Fetch and update wa_contact_id from WAHA API
+        Can be executed on multiple records
+        """
+        success_count = 0
+        error_count = 0
+        
+        for record in self:
+            try:
+                from odoo.addons.waha.tools.waha_api import WahaApi
+                api = WahaApi(record.wa_account_id)
+                
+                # Use LID if available, otherwise phone
+                identifier = record.lid if record.lid else False # We require LID or phone to fetch contact ID
+                
+                if not identifier:
+                    _logger.warning('No identifier (LID/phone) for waha.partner %s', record.id)
+                    error_count += 1
+                    continue
+                
+                # Get contact info from WAHA
+                contact_info = api.get_contact_id_by_lid(identifier)
+                
+                if not contact_info:
+                    _logger.warning('No contact info from WAHA for %s', identifier)
+                    error_count += 1
+                    continue
+                
+                # Extract contact ID
+                contact_id = contact_info.get('id') or contact_info.get('pn')
+                if contact_id:
+                    if isinstance(contact_id, dict):
+                        wa_contact_id = contact_id.get('_serialized', contact_id.get('user', ''))
+                    else:
+                        wa_contact_id = str(contact_id)
+                    
+                    if wa_contact_id:
+                        record.sudo().write({'wa_contact_id': wa_contact_id})
+                        _logger.info('Updated wa_contact_id for %s: %s', record.display_name, wa_contact_id)
+                        success_count += 1
+                    else:
+                        _logger.warning('Empty wa_contact_id for %s', identifier)
+                        error_count += 1
+                else:
+                    _logger.warning('No contact ID in response for %s', identifier)
+                    error_count += 1
+                    
+            except Exception as e:
+                _logger.error('Failed to fetch wa_contact_id for %s: %s', record.display_name, str(e))
+                error_count += 1
+        
+        # Show notification
+        if success_count > 0:
+            message = f'Updated {success_count} contact(s)'
+            if error_count > 0:
+                message += f' ({error_count} failed)'
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'WhatsApp Contact ID Updated',
+                    'message': message,
+                    'type': 'success' if error_count == 0 else 'warning',
+                    'sticky': False,
+                }
+            }
+        else:
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'Error',
+                    'message': f'Failed to update contact IDs ({error_count} errors)',
+                    'type': 'danger',
+                    'sticky': False,
+                }
+            }
     
     def action_view_partner(self):
         """Open partner form view"""

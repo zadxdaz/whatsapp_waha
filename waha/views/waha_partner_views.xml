@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- Tree View -->
+    <!-- List View -->
     <record id="view_waha_partner_tree" model="ir.ui.view">
         <field name="name">waha.partner.tree</field>
         <field name="model">waha.partner</field>
@@ -8,7 +8,7 @@
             <list string="WhatsApp Contacts">
                 <field name="display_name"/>
                 <field name="phone_number"/>
-                <field name="wa_name"/>
+                <field name="lid"/>
                 <field name="is_business" widget="boolean"/>
                 <field name="wa_account_id"/>
                 <field name="is_contact_synced" widget="boolean"/>
@@ -28,6 +28,11 @@
                             string="Refresh from WhatsApp" 
                             type="object"
                             class="btn-primary"/>
+                    <button name="action_fetch_wa_contact_id"
+                            string="Update Contact ID"
+                            type="object"
+                            class="btn-primary"
+                            help="Fetch wa_contact_id from WAHA API"/>
                     <button name="action_view_partner" 
                             string="View Partner" 
                             type="object"
@@ -42,12 +47,11 @@
                             <field name="partner_id"/>
                             <field name="display_name"/>
                             <field name="phone_number"/>
+                            <field name="lid"/>
                             <field name="wa_contact_id"/>
-                            <field name="wa_account_id"/>
                         </group>
                         <group>
-                            <field name="wa_name"/>
-                            <field name="wa_pushname"/>
+                            <field name="wa_account_id"/>
                             <field name="is_business"/>
                             <field name="is_contact_synced"/>
                             <field name="last_sync_date"/>
@@ -84,7 +88,7 @@
             <search string="Search WhatsApp Contacts">
                 <field name="display_name"/>
                 <field name="phone_number"/>
-                <field name="wa_name"/>
+                <field name="lid"/>
                 <field name="partner_id"/>
                 <field name="wa_account_id"/>
                 
@@ -116,6 +120,30 @@
             <p>
                 Contacts will be automatically created when you send or receive messages.
             </p>
+        </field>
+    </record>
+
+    <!-- Server Action: Update Contact ID for selected records -->
+    <record id="action_server_fetch_wa_contact_id" model="ir.actions.server">
+        <field name="name">Update WhatsApp Contact ID</field>
+        <field name="model_id" ref="model_waha_partner"/>
+        <field name="binding_model_id" ref="model_waha_partner"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="state">code</field>
+        <field name="code">
+action = records.action_fetch_wa_contact_id()
+        </field>
+    </record>
+
+    <!-- Server Action: Refresh contacts from WAHA -->
+    <record id="action_server_refresh_from_waha" model="ir.actions.server">
+        <field name="name">Refresh from WhatsApp</field>
+        <field name="model_id" ref="model_waha_partner"/>
+        <field name="binding_model_id" ref="model_waha_partner"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="state">code</field>
+        <field name="code">
+action = records.with_context(show_notification=True).refresh_contact_info()
         </field>
     </record>
 </odoo>
