@@ -47,8 +47,6 @@
             'waha/static/src/core/public_web/discuss_app_model_patch.js',
             'waha/static/src/core/public_web/thread_model_patch.js',
             'waha/static/src/core/web/discuss_app_category_model_patch.js',
-            'waha/static/src/core/web/discuss_sidebar_categories_waha.js',
-            'waha/static/src/core/web/waha_core_web_service.js',
             'waha/static/src/scss/waha_discuss.scss',
         ],
     },
