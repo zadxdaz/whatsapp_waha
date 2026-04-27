@@ -439,7 +439,8 @@ class WahaMessage(models.Model):
             # to the mail.message created by message_post(). If they are not,
             # do not auto-create a new Discuss message: using the recipient as
             # author would make it look like the contact sent our own text back.
-            if message.message_type == 'outbound':
+            allow_outbound_discuss_sync = self.env.context.get('allow_outbound_discuss_sync')
+            if message.message_type == 'outbound' and not allow_outbound_discuss_sync:
                 _logger.warning(
                     'Outbound waha.message %s has no linked mail_message_id; '
                     'skipping auto-create to avoid duplicate Discuss messages',
@@ -491,12 +492,20 @@ class WahaMessage(models.Model):
                     message.mail_message_id = False
                     continue
                 
+                if message.message_type == 'outbound':
+                    author_partner = (
+                        message.wa_account_id.notify_user_ids[:1].partner_id
+                        or self.env.user.partner_id
+                    )
+                else:
+                    author_partner = message.waha_partner_id.partner_id
+
                 # Prepare post params
                 post_params = {
                     'body': body_clean,
                     'message_type': 'comment',
                     'subtype_xmlid': 'mail.mt_comment',
-                    'author_id': message.waha_partner_id.partner_id.id,
+                    'author_id': author_partner.id,
                 }
                 _logger.info('Author partner for discuss message: %s', post_params['author_id'])
                 

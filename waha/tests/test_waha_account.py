@@ -236,10 +236,12 @@ class TestFetchChatsTimestamps(WahaTestCommon):
     def _build_chat_response(self, chat_id='5491112345678@c.us'):
         return [{'id': {'_serialized': chat_id}, 'name': 'Test', 'timestamp': 1}]
 
-    def _build_message_response(self, timestamp, chat_id='5491112345678@c.us'):
+    def _build_message_response(self, timestamp, chat_id='5491112345678@c.us',
+                                msg_uid='msg_ts_001', from_me=False):
         return [{
-            'id': {'id': 'msg_ts_001', '_serialized': 'msg_ts_001'},
+            'id': {'id': msg_uid, '_serialized': msg_uid},
             'from': chat_id,
+            'fromMe': from_me,
             'body': 'timestamp test',
             'timestamp': timestamp,
             'type': 'chat',
@@ -279,6 +281,49 @@ class TestFetchChatsTimestamps(WahaTestCommon):
         ])
         # UTC interpretation: 2023-11-14 22:13:20
         self.assertEqual(msg.wa_timestamp, datetime(2023, 11, 14, 22, 13, 20))
+
+    def test_sync_uses_configured_limits(self):
+        self.account.write({
+            'sync_chat_limit': 2,
+            'sync_message_limit': 25,
+        })
+        chat_response = [
+            {'id': {'_serialized': '5491111111111@c.us'}, 'name': 'Old', 'timestamp': 1},
+            {'id': {'_serialized': '5491222222222@c.us'}, 'name': 'Newest', 'timestamp': 3},
+            {'id': {'_serialized': '5491333333333@c.us'}, 'name': 'Middle', 'timestamp': 2},
+        ]
+        with patch(_API) as MockApi:
+            MockApi.return_value.get_chats.return_value = chat_response
+            MockApi.return_value.get_messages.return_value = []
+            with patch('odoo.addons.waha.models.waha_message.WahaApi'):
+                with patch('odoo.addons.waha.models.waha_chat.WahaApi'):
+                    self.account.action_fetch_chats_and_messages()
+
+        self.assertEqual(MockApi.return_value.get_messages.call_count, 2)
+        for call in MockApi.return_value.get_messages.call_args_list:
+            self.assertEqual(call.kwargs['limit'], 25)
+
+    def test_outbound_history_message_uses_user_author(self):
+        with patch(_API) as MockApi:
+            MockApi.return_value.get_chats.return_value = self._build_chat_response(
+                '5491112345678@c.us'
+            )
+            MockApi.return_value.get_messages.return_value = self._build_message_response(
+                1700000000,
+                '5491112345678@c.us',
+                msg_uid='msg_from_me_001',
+                from_me=True,
+            )
+            with patch('odoo.addons.waha.models.waha_message.WahaApi'):
+                with patch('odoo.addons.waha.models.waha_chat.WahaApi'):
+                    self.account.action_fetch_chats_and_messages()
+
+        msg = self.env['waha.message'].search([
+            ('msg_uid', '=', 'msg_from_me_001'),
+            ('wa_account_id', '=', self.account.id),
+        ])
+        self.assertEqual(msg.message_type, 'outbound')
+        self.assertEqual(msg.mail_message_id.author_id, self.admin_user.partner_id)
 
 
 class TestCronCheckConnection(WahaTestCommon):

@@ -16,7 +16,7 @@
                     <button name="action_refresh_status" string="Refresh Status" type="object"/>
                     <button name="action_fetch_chats_and_messages" string="📊 Load Chats" type="object"
                             invisible="status not in ['connected', 'connecting']"
-                            title="Fetch last 10 chats with last 100 messages from each"/>
+                            title="Fetch recent WAHA chats and messages using the configured limits"/>
                     <button name="action_disconnect" string="Disconnect" type="object"
                             invisible="status not in ['connected', 'connecting']"/>
                     <field name="status" widget="statusbar"
@@ -69,6 +69,15 @@
                         <group string="Notifications">
                             <field name="notify_user_ids" widget="many2many_tags" 
                                    placeholder="Select users to notify"/>
+                        </group>
+                    </group>
+
+                    <group string="WAHA Sync">
+                        <group>
+                            <field name="sync_chat_limit"/>
+                        </group>
+                        <group>
+                            <field name="sync_message_limit"/>
                         </group>
                     </group>
                 </sheet>

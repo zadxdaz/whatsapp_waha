@@ -100,6 +100,19 @@ class WahaAccount(models.Model):
         help="Users to notify when a message is received"
     )
 
+    sync_chat_limit = fields.Integer(
+        string="Chats to Sync",
+        default=10,
+        required=True,
+        help="Maximum number of recent WAHA chats to import from this account."
+    )
+    sync_message_limit = fields.Integer(
+        string="Messages per Chat",
+        default=100,
+        required=True,
+        help="Maximum number of recent WAHA messages to import for each chat."
+    )
+
     # Statistics
     templates_count = fields.Integer(
         string="Templates Count",
@@ -150,6 +163,14 @@ class WahaAccount(models.Model):
         for account in self:
             if len(account.notify_user_ids) < 1:
                 raise ValidationError(_("At least one user to notify is required"))
+
+    @api.constrains('sync_chat_limit', 'sync_message_limit')
+    def _check_sync_limits(self):
+        for account in self:
+            if account.sync_chat_limit < 1:
+                raise ValidationError(_("Chats to Sync must be greater than zero"))
+            if account.sync_message_limit < 1:
+                raise ValidationError(_("Messages per Chat must be greater than zero"))
 
     def action_view_templates(self):
         """View templates for this account"""
@@ -358,7 +379,7 @@ class WahaAccount(models.Model):
 
     def action_fetch_chats_and_messages(self):
         """
-        Fetch last 10 chats and last 100 messages from each chat, persist to DB
+        Fetch recent chats and recent messages from each chat, persist to DB
         
         Compatible with refactored architecture:
         - Uses waha.chat.find_or_create() for chats
@@ -397,8 +418,11 @@ class WahaAccount(models.Model):
                     }
                 }
             
-            # Sort by timestamp and take first 10
-            chats = sorted(chats, key=lambda x: x.get('timestamp', 0), reverse=True)[:10]
+            chat_limit = self.sync_chat_limit or 10
+            message_limit = self.sync_message_limit or 100
+
+            # Sort by timestamp and take the configured number of recent chats
+            chats = sorted(chats, key=lambda x: x.get('timestamp', 0), reverse=True)[:chat_limit]
             
             # Counters
             chats_created = 0
@@ -408,11 +432,10 @@ class WahaAccount(models.Model):
             for idx, chat in enumerate(chats, 1):
                 try:
                     # Extract chat_id
-                    chat_id_obj = chat.get('id', {})
-                    if isinstance(chat_id_obj, dict):
-                        chat_id = chat_id_obj.get('_serialized', chat_id_obj.get('user', 'Unknown'))
-                    else:
-                        chat_id = str(chat_id_obj)
+                    chat_id = self._extract_waha_message_id(chat.get('id'))
+                    if not chat_id:
+                        _logger.warning('Skipping chat without id: %s', chat)
+                        continue
                     
                     chat_name = chat.get('name', chat_id)
                     is_group = '@g.us' in chat_id
@@ -430,7 +453,7 @@ class WahaAccount(models.Model):
                         chats_created += 1
                     
                     # Get messages for this chat
-                    messages_response = api.get_messages(chat_id, limit=100)
+                    messages_response = api.get_messages(chat_id, limit=message_limit)
                     
                     # Parse messages
                     if isinstance(messages_response, dict):
@@ -448,12 +471,11 @@ class WahaAccount(models.Model):
                     # Process each message
                     for msg in messages:
                         try:
-                            # Extract message data
-                            msg_id = msg.get('id', {})
-                            if isinstance(msg_id, dict):
-                                msg_uid = msg_id.get('id', '') or msg_id.get('_serialized', '')
-                            else:
-                                msg_uid = str(msg_id)
+                            context = self._extract_synced_message_context(msg, chat_id)
+                            msg_uid = context['msg_uid']
+                            if not msg_uid:
+                                _logger.warning('Skipping message without id: %s', msg)
+                                continue
                             
                             # Skip if message already exists
                             existing = self.env['waha.message'].search([
@@ -464,42 +486,12 @@ class WahaAccount(models.Model):
                             if existing:
                                 continue
                             
-                            # Extract sender info
-                            from_obj = msg.get('from', '') or msg.get('author', '')
-                            if isinstance(from_obj, dict):
-                                sender_id = from_obj.get('id', '') or from_obj.get('_serialized', '')
-                            else:
-                                sender_id = str(from_obj)
-                            
-                            # Normalize phone (remove @c.us, @g.us, etc)
-                            sender_phone = sender_id.replace('@c.us', '').replace('@lid', '').replace('@g.us', '')
-                            sender_phone = ''.join(filter(str.isdigit, sender_phone))
-                            
-                            # Skip messages with invalid sender phone
-                            if not sender_phone or sender_phone == '0':
-                                _logger.warning('Skipping message %s with invalid sender phone: %s', msg_uid, sender_id)
-                                continue
-                            
-                            # Extract message content
-                            body = msg.get('body', '') or msg.get('text', {}).get('body', '') or ''
-                            
-                            # Detect message type
-                            message_type = 'inbound'  # Sync is for received messages
-                            
                             # Detect content type
                             content_type = 'text'
                             if msg.get('type'):
                                 msg_type = msg.get('type', '').lower()
                                 if msg_type in ['image', 'video', 'audio', 'document', 'sticker']:
                                     content_type = msg_type
-                            
-                            # Extract timestamp
-                            timestamp = msg.get('timestamp')
-                            if timestamp:
-                                from datetime import datetime
-                                wa_timestamp = datetime.fromtimestamp(timestamp)
-                            else:
-                                wa_timestamp = fields.Datetime.now()
                             
                             # Validate msg for raw_payload
                             if not msg or not isinstance(msg, dict):
@@ -513,21 +505,36 @@ class WahaAccount(models.Model):
                             vals = {
                                 'wa_account_id': self.id,
                                 'msg_uid': msg_uid,
-                                'message_type': message_type,
+                                'message_type': 'outbound' if context['from_me'] else 'inbound',
                                 'content_type': content_type,
-                                'state': 'received',
-                                'body': body or '(no content)',
+                                'state': 'sent' if context['from_me'] else 'received',
+                                'body': context['body'] or '(no content)',
                                 'raw_chat_id': chat_id,
-                                'raw_sender_phone': sender_phone,
-                                'wa_timestamp': wa_timestamp,
+                                'raw_sender_lid': context['sender_lid'],
+                                'raw_sender_phone': context['sender_phone'],
+                                'wa_timestamp': context['wa_timestamp'],
                                 'raw_payload': valid_msg,
                             }
+
+                            if context.get('participant'):
+                                vals['participant_id'] = context['participant']
+
+                            if context.get('reply_to_msg_uid'):
+                                original_msg = self._find_synced_reply_to_message(
+                                    chat_id,
+                                    context['reply_to_msg_uid'],
+                                )
+                                if original_msg:
+                                    vals['reply_to_message_id'] = original_msg.id
+                                    vals['reply_to_msg_uid'] = original_msg.msg_uid
                             
                             # Create message - auto-compute will handle:
                             # 1. waha_chat_id
                             # 2. partner_id
                             # 3. mail_message_id (Discuss message)
-                            waha_msg = self.env['waha.message'].create(vals)
+                            waha_msg = self.env['waha.message'].with_context(
+                                allow_outbound_discuss_sync=True
+                            ).create(vals)
                             
                             if waha_msg:
                                 messages_created += 1
@@ -554,7 +561,8 @@ class WahaAccount(models.Model):
             # Build summary message
             summary = []
             summary.append(f"✅ Sync Complete\n")
-            summary.append(f"📊 Processed {len(chats)} chats")
+            summary.append(f"📊 Processed {len(chats)} chats (limit: {chat_limit})")
+            summary.append(f"🧾 Read up to {message_limit} messages per chat")
             summary.append(f"💬 Chats created/updated: {chats_created}")
             summary.append(f"📨 Messages created: {messages_created}")
             summary.append(f"\nNote: Partners, channels, and discuss messages created automatically via auto-compute")
@@ -579,6 +587,89 @@ class WahaAccount(models.Model):
         except Exception as e:
             _logger.exception('Error fetching chats and messages: %s', str(e))
             raise UserError(_("Error fetching chats and messages: %s") % str(e)) 
+
+    def _extract_waha_message_id(self, value):
+        """Return WAHA serialized id from either string or id dict."""
+        if isinstance(value, dict):
+            return value.get('_serialized') or value.get('id') or value.get('user') or ''
+        return str(value) if value else ''
+
+    def _extract_synced_message_context(self, msg, chat_id):
+        """Normalize a message returned by WAHA chat history endpoints."""
+        msg_uid = self._extract_waha_message_id(msg.get('id'))
+        from_me = bool(msg.get('fromMe'))
+        participant = self._extract_waha_message_id(msg.get('participant') or msg.get('author'))
+        from_raw = self._extract_waha_message_id(msg.get('from')) or chat_id
+        is_group = '@g.us' in chat_id or '@g.us' in from_raw
+
+        sender_raw = participant if (is_group and participant) else from_raw
+        if from_me and not is_group:
+            # For outbound 1-1 history, keep the recipient as waha_partner so it
+            # matches messages created from Odoo Discuss.
+            sender_raw = chat_id
+
+        sender_lid = None
+        sender_phone = None
+        if '@lid' in sender_raw:
+            sender_lid = sender_raw.split('@')[0]
+        elif '@c.us' in sender_raw:
+            sender_phone = sender_raw.split('@')[0]
+        elif sender_raw and '@g.us' not in sender_raw:
+            sender_phone = sender_raw.split('@')[0] if '@' in sender_raw else sender_raw
+
+        body = msg.get('body', '')
+        if isinstance(body, dict):
+            body = body.get('text') or body.get('body') or str(body)
+        elif not body and isinstance(msg.get('text'), dict):
+            body = msg['text'].get('body') or msg['text'].get('text') or ''
+        elif not isinstance(body, str):
+            body = str(body) if body else ''
+
+        timestamp_value = msg.get('timestamp')
+        wa_timestamp = None
+        if timestamp_value is not None:
+            try:
+                from datetime import datetime
+                wa_timestamp = datetime.fromtimestamp(int(timestamp_value))
+            except (ValueError, TypeError):
+                wa_timestamp = fields.Datetime.now()
+
+        reply_to = msg.get('replyTo') or {}
+        reply_to_msg_uid = None
+        if isinstance(reply_to, dict):
+            reply_to_msg_uid = self._extract_waha_message_id(reply_to.get('id'))
+        if not reply_to_msg_uid:
+            quoted_stanza_id = (msg.get('_data') or {}).get('quotedStanzaID')
+            reply_to_msg_uid = quoted_stanza_id or None
+
+        return {
+            'msg_uid': msg_uid,
+            'from_me': from_me,
+            'sender_lid': sender_lid,
+            'sender_phone': sender_phone,
+            'participant': participant,
+            'body': body,
+            'wa_timestamp': wa_timestamp or fields.Datetime.now(),
+            'reply_to_msg_uid': reply_to_msg_uid,
+        }
+
+    def _find_synced_reply_to_message(self, chat_id, reply_to_id):
+        if not reply_to_id:
+            return self.env['waha.message']
+        base_domain = [
+            ('wa_account_id', '=', self.id),
+            ('raw_chat_id', '=', chat_id),
+        ]
+        message = self.env['waha.message'].search(
+            base_domain + [('msg_uid', '=', reply_to_id)],
+            limit=1,
+        )
+        if message:
+            return message
+        return self.env['waha.message'].search(
+            base_domain + [('msg_uid', 'ilike', reply_to_id)],
+            limit=1,
+        )
 
     def button_sync_waha_templates(self):
         """
