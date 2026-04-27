@@ -22,13 +22,22 @@ class MailThread(models.AbstractModel):
             _logger.info('Channel: %s (ID: %s)', self.name, self.id)
             
             try:
-                # Don't send if author is a contact (incoming message)
-                # Only send if author is a user (outgoing message)
-                author_id = kwargs.get('author_id')
-                current_user_partner = self.env.user.partner_id
-                
-                if author_id and author_id != current_user_partner.id:
-                    _logger.info('Skipping WhatsApp send for incoming message from contact %s', author_id)
+                # Only forward regular comment messages — not system notifications,
+                # channel event messages, or automated bot messages.
+                if result.message_type != 'comment':
+                    _logger.info('Skipping WhatsApp send: message_type=%s', result.message_type)
+                    return result
+
+                # Only forward messages from active internal users.
+                # This excludes: OdooBot, portal users, external contacts.
+                author = result.author_id
+                odoobot = self.env.ref('base.partner_root', raise_if_not_found=False)
+                if not author or (odoobot and author == odoobot):
+                    _logger.info('Skipping WhatsApp send: system/bot author (%s)', author.display_name if author else 'none')
+                    return result
+                internal_users = author.user_ids.filtered(lambda u: not u.share and u.active)
+                if not internal_users:
+                    _logger.info('Skipping WhatsApp send: author %s has no internal user account', author.display_name)
                     return result
                 
                 # Get account
