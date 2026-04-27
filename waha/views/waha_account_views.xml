@@ -18,7 +18,9 @@
                             invisible="status not in ['connected', 'connecting']"
                             title="Fetch recent WAHA chats and messages using the configured limits"/>
                     <button name="action_repair_discuss_channels" string="🔧 Repair Channels" type="object"
-                            title="Create missing Discuss channels for existing WhatsApp chats"/>
+                            title="Create missing Discuss channels and migrate channel types"/>
+                    <button name="action_resync_messages" string="🔄 Resync Messages" type="object"
+                            title="Load existing WAHA messages into Discuss conversations"/>
                     <button name="action_disconnect" string="Disconnect" type="object"
                             invisible="status not in ['connected', 'connecting']"/>
                     <field name="status" widget="statusbar"

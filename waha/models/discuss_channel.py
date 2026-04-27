@@ -6,8 +6,8 @@ class DiscussChannel(models.Model):
     _inherit = 'discuss.channel'
 
     channel_type = fields.Selection(
-        selection_add=[('whatsapp', 'WhatsApp Conversation')],
-        ondelete={'whatsapp': 'cascade'}
+        selection_add=[('waha', 'WhatsApp (WAHA)')],
+        ondelete={'waha': 'cascade'}
     )
 
     is_whatsapp = fields.Boolean(

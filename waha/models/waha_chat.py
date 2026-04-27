@@ -127,6 +127,7 @@ class WahaChat(models.Model):
                 ('wa_chat_id', '=', chat.wa_chat_id),
                 ('is_whatsapp', '=', True),
                 ('whatsapp_account_id', '=', chat.wa_account_id.id),
+                ('channel_type', 'in', ['waha', 'whatsapp']),
             ], limit=1)
     
     @api.depends('wa_chat_id', 'chat_type')
@@ -223,7 +224,7 @@ class WahaChat(models.Model):
 
         channel = self.env['discuss.channel'].sudo().create({
             'name': self._get_channel_name(),
-            'channel_type': 'whatsapp',
+            'channel_type': 'waha',
             'is_whatsapp': True,
             'wa_chat_id': self.wa_chat_id,
             'whatsapp_account_id': self.wa_account_id.id,

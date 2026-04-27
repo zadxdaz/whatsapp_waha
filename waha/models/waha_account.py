@@ -378,8 +378,20 @@ class WahaAccount(models.Model):
             raise UserError(_("Error disconnecting: %s") % str(e))
 
     def action_repair_discuss_channels(self):
-        """Create missing discuss.channel for every waha.chat that doesn't have one."""
+        """Create missing discuss.channel for every waha.chat that doesn't have one.
+        Also migrates existing channels from channel_type='whatsapp' to 'waha'."""
         self.ensure_one()
+
+        # Migrate old channel_type='whatsapp' channels created by this module
+        old_channels = self.env['discuss.channel'].sudo().search([
+            ('whatsapp_account_id', '=', self.id),
+            ('channel_type', '=', 'whatsapp'),
+        ])
+        if old_channels:
+            old_channels.sudo().write({'channel_type': 'waha'})
+            _logger.info('Migrated %d channels from whatsapp to waha type', len(old_channels))
+
+        # Create channels for chats that don't have one yet
         chats_without_channel = self.env['waha.chat'].search([
             ('wa_account_id', '=', self.id),
             ('discuss_channel_id', '=', False),
@@ -398,7 +410,30 @@ class WahaAccount(models.Model):
             'tag': 'display_notification',
             'params': {
                 'title': _('Channels Repaired'),
-                'message': _('%d WhatsApp chats now have a Discuss channel.') % repaired,
+                'message': _('Migrated old channels. Created %d new Discuss channels.') % repaired,
+                'type': 'success',
+            },
+        }
+
+    def action_resync_messages(self):
+        """Re-trigger mail_message_id compute for waha.messages that have a channel but no discuss message."""
+        self.ensure_one()
+        messages_to_sync = self.env['waha.message'].sudo().search([
+            ('wa_account_id', '=', self.id),
+            ('mail_message_id', '=', False),
+            ('message_type', '=', 'inbound'),
+            ('waha_chat_id.discuss_channel_id', '!=', False),
+        ])
+        _logger.info('Re-syncing %d messages for account %s', len(messages_to_sync), self.name)
+        messages_to_sync.with_context(allow_outbound_discuss_sync=False)._compute_mail_message_id()
+        synced = messages_to_sync.filtered(lambda m: m.mail_message_id)
+        _logger.info('Successfully synced %d/%d messages', len(synced), len(messages_to_sync))
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': _('Messages Synced'),
+                'message': _('%d of %d messages loaded into conversations.') % (len(synced), len(messages_to_sync)),
                 'type': 'success',
             },
         }
