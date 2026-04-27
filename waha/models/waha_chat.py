@@ -230,7 +230,9 @@ class WahaChat(models.Model):
         })
         _logger.info('Created discuss.channel %s for waha.chat %s', channel.id, self.id)
 
-        # Invalidate so _compute_discuss_channel_id picks it up
+        # Write the FK directly (readonly=False allows this) so that
+        # _sync_channel_members reads the correct value from DB.
+        self.sudo().write({'discuss_channel_id': channel.id})
         self.invalidate_recordset(['discuss_channel_id'])
         self._sync_channel_members()
         return channel
