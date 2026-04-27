@@ -24,29 +24,37 @@ class WahaWebhookController(http.Controller):
             data = json.loads(request.httprequest.data.decode('utf-8'))
             _logger.info('WAHA Webhook received: %s', json.dumps(data, indent=2))
             
-            # Verify webhook token (optional - only if configured in account)
-            verify_token = request.httprequest.headers.get('X-Webhook-Token')
             session_name = data.get('session')
-            
+
             # Find account by session name
             account = request.env['waha.account'].sudo().search([
                 ('session_name', '=', session_name)
             ], limit=1)
-            
+
             if not account:
                 _logger.warning('No account found for session: %s', session_name)
                 return request.make_response(
                     json.dumps({'status': 'error', 'message': 'Session not found'}),
                     headers=[('Content-Type', 'application/json')]
                 )
-            
-            # Only verify token if account has one configured
-            if account.webhook_verify_token and verify_token != account.webhook_verify_token:
-                _logger.warning('Invalid webhook token for session: %s', session_name)
-                return request.make_response(
-                    json.dumps({'status': 'error', 'message': 'Invalid token'}),
-                    headers=[('Content-Type', 'application/json')]
-                )
+
+            # Verify token when configured.
+            # Priority: URL query param ?token= first, then X-Webhook-Token header.
+            if account.webhook_verify_token:
+                received = (
+                    request.httprequest.args.get('token')
+                    or request.httprequest.headers.get('X-Webhook-Token', '')
+                ).strip()
+                if received != account.webhook_verify_token.strip():
+                    _logger.warning(
+                        'Webhook token mismatch for session %s (received=%r)',
+                        session_name, received or '<empty>',
+                    )
+                    return request.make_response(
+                        json.dumps({'status': 'error', 'message': 'Invalid token'}),
+                        headers=[('Content-Type', 'application/json')],
+                        status=403,
+                    )
             
             # Process based on event type
             event = data.get('event')

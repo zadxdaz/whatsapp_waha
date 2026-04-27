@@ -146,9 +146,12 @@ class WahaAccount(models.Model):
                 )
 
     def _compute_callback_url(self):
-        """Calculate webhook callback URL"""
+        """Calculate webhook callback URL, embedding the verify token as a query param."""
         for account in self:
-            account.callback_url = self.get_base_url() + '/waha/webhook'
+            base = self.get_base_url() + '/waha/webhook'
+            if account.webhook_verify_token:
+                base += f'?token={account.webhook_verify_token}'
+            account.callback_url = base
 
     def _compute_templates_count(self):
         """Count associated templates"""
