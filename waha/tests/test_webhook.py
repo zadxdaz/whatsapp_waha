@@ -137,6 +137,14 @@ class TestExtractMessageContext(WahaTestCommon):
         ctx = self.controller._extract_message_context(payload)
         self.assertEqual(ctx['reply_to_stanza_id'], 'original_msg_uid_001')
 
+    def test_top_level_reply_to_id_has_priority(self):
+        payload = self.make_inbound_payload(**{
+            'replyTo': {'id': 'false_5491112345678@c.us_original_full_id'},
+            '_data': {'quotedStanzaID': 'legacy_suffix'},
+        })
+        ctx = self.controller._extract_message_context(payload)
+        self.assertEqual(ctx['reply_to_stanza_id'], 'false_5491112345678@c.us_original_full_id')
+
     def test_no_quoted_stanza_is_none(self):
         payload = self.make_inbound_payload()
         ctx = self.controller._extract_message_context(payload)
@@ -237,6 +245,45 @@ class TestHandleIncomingMessage(WahaTestCommon):
                 controller._handle_incoming_message(data)
         msg = self.env['waha.message'].search([('msg_uid', '=', 'webhook_chat_id_001')])
         self.assertEqual(msg.raw_chat_id, '5491112345678@c.us')
+
+    def test_reply_to_links_exact_top_level_reply_to_id(self):
+        original = self.env['waha.message'].create({
+            'wa_account_id': self.account.id,
+            'msg_uid': 'false_5491112345678@c.us_original_exact_id',
+            'body': 'Original from Odoo',
+            'message_type': 'outbound',
+            'state': 'sent',
+            'raw_chat_id': '5491112345678@c.us',
+            'raw_sender_phone': '5491112345678',
+        })
+        data = self._build_data(
+            'webhook_reply_exact_001',
+            body='Actual customer reply',
+            replyTo={'id': original.msg_uid, 'body': original.body},
+        )
+        self._call(data)
+        reply = self.env['waha.message'].search([('msg_uid', '=', 'webhook_reply_exact_001')])
+        self.assertEqual(reply.reply_to_message_id, original)
+        self.assertEqual(reply.reply_to_msg_uid, original.msg_uid)
+
+    def test_reply_to_falls_back_to_quoted_stanza_suffix(self):
+        original = self.env['waha.message'].create({
+            'wa_account_id': self.account.id,
+            'msg_uid': 'false_5491112345678@c.us_suffix_only_id',
+            'body': 'Original from Odoo',
+            'message_type': 'outbound',
+            'state': 'sent',
+            'raw_chat_id': '5491112345678@c.us',
+            'raw_sender_phone': '5491112345678',
+        })
+        data = self._build_data(
+            'webhook_reply_suffix_001',
+            body='Actual customer reply',
+            _data={'quotedStanzaID': 'suffix_only_id'},
+        )
+        self._call(data)
+        reply = self.env['waha.message'].search([('msg_uid', '=', 'webhook_reply_suffix_001')])
+        self.assertEqual(reply.reply_to_message_id, original)
 
 
 class TestHandleMessageAck(WahaTestCommon):

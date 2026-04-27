@@ -428,3 +428,70 @@ class TestUpdateStatusFromWebhook(WahaTestCommon):
         first_sent_date = msg.sent_date
         msg.update_status_from_webhook({'ack': 2})
         self.assertEqual(msg.sent_date, first_sent_date)
+
+
+class TestDiscussMessagePostBridge(WahaTestCommon):
+    """mail.thread bridge — keep Odoo mail.message linked to waha.message."""
+
+    def test_outbound_without_mail_message_is_not_duplicated_in_discuss(self):
+        chat = self.make_waha_chat('5491100006000@c.us')
+        count_before = self.env['mail.message'].search_count([
+            ('model', '=', 'discuss.channel'),
+            ('res_id', '=', chat.discuss_channel_id.id),
+        ])
+        self.env['waha.message'].create({
+            'wa_account_id': self.account.id,
+            'msg_uid': 'true_5491100006000@c.us_unlinked_outbound',
+            'body': 'Unlinked outbound must not be reposted',
+            'message_type': 'outbound',
+            'state': 'sent',
+            'raw_chat_id': '5491100006000@c.us',
+            'raw_sender_phone': '5491100006000',
+        })
+        count_after = self.env['mail.message'].search_count([
+            ('model', '=', 'discuss.channel'),
+            ('res_id', '=', chat.discuss_channel_id.id),
+        ])
+        self.assertEqual(count_after, count_before)
+
+    def test_outbound_discuss_post_links_existing_mail_message(self):
+        chat = self.make_waha_chat('5491100006001@c.us')
+        with patch(_MSG_API) as MockApi:
+            MockApi.return_value.send_text.return_value = {
+                'id': 'true_5491100006001@c.us_outbound_linked'
+            }
+            mail_message = chat.discuss_channel_id.message_post(
+                body='Message from Odoo',
+                author_id=self.env.user.partner_id.id,
+            )
+        waha_message = self.env['waha.message'].search([
+            ('mail_message_id', '=', mail_message.id),
+            ('msg_uid', '=', 'true_5491100006001@c.us_outbound_linked'),
+        ])
+        self.assertEqual(len(waha_message), 1)
+        self.assertEqual(waha_message.mail_message_id, mail_message)
+
+    def test_outbound_discuss_reply_sets_waha_parent(self):
+        chat = self.make_waha_chat('5491100006002@c.us')
+        with patch(_MSG_API) as MockApi:
+            MockApi.return_value.send_text.side_effect = [
+                {'id': 'true_5491100006002@c.us_parent'},
+                {'id': 'true_5491100006002@c.us_child'},
+            ]
+            parent_mail = chat.discuss_channel_id.message_post(
+                body='Parent from Odoo',
+                author_id=self.env.user.partner_id.id,
+            )
+            child_mail = chat.discuss_channel_id.message_post(
+                body='Child from Odoo',
+                author_id=self.env.user.partner_id.id,
+                parent_id=parent_mail.id,
+            )
+        parent_waha = self.env['waha.message'].search([
+            ('mail_message_id', '=', parent_mail.id),
+        ], limit=1)
+        child_waha = self.env['waha.message'].search([
+            ('mail_message_id', '=', child_mail.id),
+        ], limit=1)
+        self.assertEqual(child_waha.reply_to_message_id, parent_waha)
+        self.assertEqual(child_waha.reply_to_msg_uid, parent_waha.msg_uid)

@@ -98,8 +98,11 @@ class MailThread(models.AbstractModel):
                             else:
                                 content_type = 'document'
                     
+                    mail_message = result if getattr(result, '_name', None) == 'mail.message' else self.env['mail.message'].browse(result).exists()
+
                     # Get reply_to if this is a reply to another message
                     reply_to_msg_uid = None
+                    reply_to_message_id = False
                     parent_id = kwargs.get('parent_id')
                     if parent_id:
                         # Find the waha.message linked to this mail.message
@@ -109,6 +112,7 @@ class MailThread(models.AbstractModel):
                         
                         if parent_waha_message and parent_waha_message.msg_uid:
                             reply_to_msg_uid = parent_waha_message.msg_uid
+                            reply_to_message_id = parent_waha_message.id
                             _logger.info('Reply to message detected: parent_id=%s, msg_uid=%s', parent_id, reply_to_msg_uid)
                     
                     # Create waha.message with mail_message_id to prevent duplication
@@ -121,7 +125,8 @@ class MailThread(models.AbstractModel):
                         'body': message_body,
                         'raw_chat_id': waha_chat.wa_chat_id,
                         'raw_sender_phone': sender_phone,
-                        'mail_message_id': result if isinstance(result, int) else False,
+                        'mail_message_id': mail_message.id if mail_message else False,
+                        'reply_to_message_id': reply_to_message_id,
                         'reply_to_msg_uid': reply_to_msg_uid,
                     }
                     

@@ -135,20 +135,20 @@ class WahaWebhookController(http.Controller):
             
             # Handle reply_to from quoted message
             if context.get('reply_to_stanza_id'):
-                # Search for any message containing this stanzaID
                 stanza_id = context['reply_to_stanza_id']
-                
-                original_msg = request.env['waha.message'].sudo().search([
-                    ('msg_uid', 'ilike', stanza_id),
-                    ('wa_account_id', '=', account.id)
-                ], limit=1)
+                original_msg = self._find_reply_to_message(
+                    request.env,
+                    account,
+                    context['chat_id'],
+                    stanza_id,
+                )
                 
                 if original_msg:
                     vals['reply_to_message_id'] = original_msg.id
                     vals['reply_to_msg_uid'] = original_msg.msg_uid
                     _logger.info('Message is reply to stanzaID %s (found msg: %s)', stanza_id, original_msg.id)
                 else:
-                    _logger.warning('Reply to message with stanzaID %s not found', stanza_id)
+                    _logger.warning('Reply to message with ID %s not found', stanza_id)
             
             message = request.env['waha.message'].sudo().create(vals)
             _logger.info('Created waha.message: %s (type=%s, relations auto-computed)', 
@@ -262,12 +262,22 @@ class WahaWebhookController(http.Controller):
         
         # Extract reply_to (quoted message)
         reply_to_stanza_id = None
+
+        # Modern WAHA payloads expose quoted messages in top-level `replyTo`.
+        # Older/engine-specific payloads may only expose `_data.quotedStanzaID`.
+        # Prefer the full message id when it is available because it matches
+        # our stored msg_uid exactly; fall back to stanza id suffix otherwise.
+        reply_to = payload.get('replyTo') or {}
+        if isinstance(reply_to, dict):
+            reply_to_stanza_id = reply_to.get('id')
+
         _data = payload.get('_data', {})
         quoted_stanza_id = _data.get('quotedStanzaID')
         
-        if quoted_stanza_id:
+        if not reply_to_stanza_id and quoted_stanza_id:
             reply_to_stanza_id = quoted_stanza_id
-            _logger.info('Detected reply to message stanzaID: %s', quoted_stanza_id)
+        if reply_to_stanza_id:
+            _logger.info('Detected reply to message ID: %s', reply_to_stanza_id)
         
         return {
             'msg_uid': payload.get('id'),
@@ -281,6 +291,26 @@ class WahaWebhookController(http.Controller):
             'wa_timestamp': wa_timestamp or fields.Datetime.now(),
             'reply_to_stanza_id': reply_to_stanza_id,
         }
+
+    def _find_reply_to_message(self, env, account, chat_id, reply_to_id):
+        """Find the waha.message referenced by a WAHA reply payload."""
+        if not reply_to_id:
+            return env['waha.message']
+
+        Message = env['waha.message'].sudo()
+        base_domain = [
+            ('wa_account_id', '=', account.id),
+            ('raw_chat_id', '=', chat_id),
+        ]
+
+        # First try the exact modern WAHA replyTo.id value.
+        message = Message.search(base_domain + [('msg_uid', '=', reply_to_id)], limit=1)
+        if message:
+            return message
+
+        # Fallback for older `_data.quotedStanzaID`, which is often only the
+        # suffix of the serialized WhatsApp message id.
+        return Message.search(base_domain + [('msg_uid', 'ilike', reply_to_id)], limit=1)
     
     def _handle_message_ack(self, data):
         """

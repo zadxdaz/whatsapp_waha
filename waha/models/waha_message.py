@@ -416,7 +416,7 @@ class WahaMessage(models.Model):
                               message.raw_sender_lid, message.raw_sender_phone)
                 message.waha_partner_id = False
     
-    @api.depends('waha_chat_id', 'waha_partner_id', 'body', 'wa_timestamp')
+    @api.depends('waha_chat_id', 'waha_partner_id', 'body', 'wa_timestamp', 'message_type')
     def _compute_mail_message_id(self):
         """
         Auto-compute discuss message relationship
@@ -433,6 +433,19 @@ class WahaMessage(models.Model):
             # Skip if already has mail_message_id
             if message.mail_message_id:
                 _logger.debug('Message %s already has mail_message_id: %s', message.id, message.mail_message_id.id)
+                continue
+
+            # Outbound messages posted from Odoo Discuss must already be linked
+            # to the mail.message created by message_post(). If they are not,
+            # do not auto-create a new Discuss message: using the recipient as
+            # author would make it look like the contact sent our own text back.
+            if message.message_type == 'outbound':
+                _logger.warning(
+                    'Outbound waha.message %s has no linked mail_message_id; '
+                    'skipping auto-create to avoid duplicate Discuss messages',
+                    message.id,
+                )
+                message.mail_message_id = False
                 continue
             
             _logger.info('Processing message %s for discuss message creation (chat=%s, waha_partner=%s)', 
