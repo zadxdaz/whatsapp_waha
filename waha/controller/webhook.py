@@ -250,6 +250,11 @@ class WahaWebhookController(http.Controller):
             body = body.get('text', '') or str(body)
         elif not isinstance(body, str):
             body = str(body) if body else ''
+
+        # Resolve @mentions to contact names
+        mentioned_ids = payload.get('mentionedIds', [])
+        if mentioned_ids and body:
+            body = self._resolve_mentions(body, mentioned_ids)
         
         # Extract timestamp
         timestamp_value = payload.get('timestamp')
@@ -291,6 +296,32 @@ class WahaWebhookController(http.Controller):
             'wa_timestamp': wa_timestamp or fields.Datetime.now(),
             'reply_to_stanza_id': reply_to_stanza_id,
         }
+
+    def _resolve_mentions(self, body, mentioned_ids):
+        """Replace raw WhatsApp mention IDs with contact names.
+
+        WAHA sends mentions as e.g. ["11932090237110@lid", "5491234567890@c.us"].
+        The body contains them as @11932090237110 (just the numeric part, no suffix).
+        We look each one up in waha.partner and substitute the display name.
+        """
+        WahaPartner = request.env['waha.partner'].sudo()
+        for raw_id in mentioned_ids:
+            if not raw_id:
+                continue
+
+            numeric = raw_id.split('@')[0]
+            suffix = raw_id.split('@')[1] if '@' in raw_id else ''
+
+            partner = None
+            if suffix == 'lid':
+                partner = WahaPartner.search([('lid', '=', numeric)], limit=1)
+            if not partner:
+                partner = WahaPartner.search([('phone_number', '=', numeric)], limit=1)
+
+            if partner and partner.display_name:
+                body = body.replace(f'@{numeric}', f'@{partner.display_name}')
+
+        return body
 
     def _find_reply_to_message(self, env, account, chat_id, reply_to_id):
         """Find the waha.message referenced by a WAHA reply payload."""
