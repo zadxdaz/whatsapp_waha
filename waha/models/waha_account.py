@@ -551,10 +551,11 @@ class WahaAccount(models.Model):
                                 continue
                             
                             # Detect content type
+                            _MEDIA_TYPES = {'image', 'video', 'audio', 'document', 'sticker'}
                             content_type = 'text'
                             if msg.get('type'):
                                 msg_type = msg.get('type', '').lower()
-                                if msg_type in ['image', 'video', 'audio', 'document', 'sticker']:
+                                if msg_type in _MEDIA_TYPES:
                                     content_type = msg_type
                             
                             # Validate msg for raw_payload
@@ -572,7 +573,7 @@ class WahaAccount(models.Model):
                                 'message_type': 'outbound' if context['from_me'] else 'inbound',
                                 'content_type': content_type,
                                 'state': 'sent' if context['from_me'] else 'received',
-                                'body': context['body'] or '(no content)',
+                                'body': context['body'] or '',
                                 'raw_chat_id': chat_id,
                                 'raw_sender_lid': context['sender_lid'],
                                 'raw_sender_phone': context['sender_phone'],
