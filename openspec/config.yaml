@@ -1,12 +1,43 @@
 schema: spec-driven
 
 context: |
-  Tech stack: Odoo custom addon (Python, XML views/data, OWL JavaScript assets, SCSS) for WAHA WhatsApp integration.
-  Architecture: Addon lives under waha/ and integrates with mail/discuss through models, controllers, wizard, assets, data, security, and tests.
-  Testing: Odoo TransactionCase tests under waha/tests. Run with Odoo test runner when an Odoo 18 service/database is available.
-  Style: Odoo addon conventions; XML data/view validation; no standalone Python test runner detected in this module checkout.
+  Tech stack: Odoo 18 custom addon (Python, XML, JS/OWL assets, SCSS) for WAHA WhatsApp integration.
+  Architecture: `waha/` addon with models, controllers, wizard, data/security XML, web assets, and Odoo tests.
+  Testing: Odoo TransactionCase tests in `waha/tests`; no standalone pytest/unittest runner configured.
+  Style: Odoo addon conventions; Python/XML/JS assets; no repo-local linter/formatter/type-checker config detected.
 
 strict_tdd: false
+
+testing:
+  strict_tdd_mode: disabled
+  detected: 2026-04-27
+  test_runner:
+    framework: Odoo TransactionCase
+    command: "odoo-bin -d <database> -i waha --test-enable --stop-after-init"
+    requires_runtime: "Odoo 18 service/database"
+  layers:
+    unit:
+      available: true
+      tool: "Odoo TransactionCase tests under waha/tests"
+    integration:
+      available: true
+      tool: "Odoo ORM/controller tests with mocked WAHA HTTP calls"
+    e2e:
+      available: false
+      tool: null
+  coverage:
+    available: false
+    command: null
+  quality_tools:
+    linter:
+      available: false
+      command: null
+    type_checker:
+      available: false
+      command: null
+    formatter:
+      available: false
+      command: null
 
 rules:
   proposal:
@@ -14,14 +45,19 @@ rules:
     - Identify affected modules/packages
   specs:
     - Use Given/When/Then format for scenarios
-    - Use RFC 2119 keywords
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
   design:
-    - Document Odoo version-specific compatibility decisions
+    - Include sequence diagrams for complex Odoo/WAHA flows
+    - Document Odoo version-specific compatibility decisions with rationale
   tasks:
-    - Group tasks by phase and keep migration steps small
+    - Group tasks by phase (infrastructure, implementation, testing)
+    - Use hierarchical numbering (1.1, 1.2, etc.)
+    - Keep tasks small enough to complete in one session
   apply:
     - Follow existing Odoo addon patterns and Odoo 18 conventions
+    - Load relevant coding skills for Odoo, tests, XML views, controllers, and assets
   verify:
     - Run static checks locally and Odoo tests if an Odoo 18 runtime is available
+    - Compare implementation against every spec scenario
   archive:
-    - Warn before merging destructive deltas
+    - Warn before merging destructive deltas (large removals)
