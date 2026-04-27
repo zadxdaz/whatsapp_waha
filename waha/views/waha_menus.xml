@@ -3,7 +3,7 @@
     <!-- WhatsApp Main Menu -->
     <menuitem id="menu_waha_root"
               name="WhatsApp"
-              web_icon="waha,static/description/icon.png"
+              web_icon="waha,static/description/icon.svg"
               sequence="85"/>
 
     <!-- Chats Menu -->
