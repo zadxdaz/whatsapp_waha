@@ -351,14 +351,14 @@ class WahaChat(models.Model):
         if self.wa_account_id.notify_user_ids:
             notify_partners = self.wa_account_id.notify_user_ids.mapped('partner_id').ids
             _logger.info('Notify partners from account: %s', notify_partners)
-        
+
         if not notify_partners:
             # Fallback to admin if no notify users configured
             admin = self.env.ref('base.user_admin').sudo()
             notify_partners = [admin.partner_id.id]
-            _logger.warning('No notify_user_ids configured for account %s, using admin as fallback', 
+            _logger.warning('No notify_user_ids configured for account %s, using admin as fallback',
                           self.wa_account_id.name)
-        
+
         if self.chat_type == 'individual':
             # For 1-1 chats: add partner + notify users
             if self.partner_id:
@@ -368,6 +368,12 @@ class WahaChat(models.Model):
         else:
             # For groups: add all participants + notify users
             members_to_add = notify_partners + self.group_participants.ids
+
+        # Always include the account partner if configured
+        if self.wa_account_id.account_partner_id:
+            account_partner_id = self.wa_account_id.account_partner_id.id
+            if account_partner_id not in members_to_add:
+                members_to_add.append(account_partner_id)
         
         # Get current members
         current_members = channel.channel_partner_ids.ids

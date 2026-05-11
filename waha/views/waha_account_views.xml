@@ -71,8 +71,9 @@
                                    groups="waha.group_waha_admin"/>
                         </group>
                         <group string="Notifications">
-                            <field name="notify_user_ids" widget="many2many_tags" 
+                            <field name="notify_user_ids" widget="many2many_tags"
                                    placeholder="Select users to notify"/>
+                            <field name="account_partner_id" placeholder="Contact for sent messages"/>
                         </group>
                     </group>
 

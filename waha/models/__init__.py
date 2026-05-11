@@ -1,5 +1,6 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+from . import mail_message
 from . import waha_account
 from . import waha_chat
 from . import waha_partner

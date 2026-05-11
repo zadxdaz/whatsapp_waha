@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import logging
+import time
 from datetime import datetime
 from odoo import http, fields
 from odoo.http import request
@@ -59,7 +60,7 @@ class WahaWebhookController(http.Controller):
             # Process based on event type
             event = data.get('event')
             
-            if event == 'message':
+            if event in ('message', 'message.any'):
                 self._handle_incoming_message(data)
             elif event == 'message.ack':
                 self._handle_message_ack(data)
@@ -103,18 +104,76 @@ class WahaWebhookController(http.Controller):
                 _logger.warning('No account found for session: %s', session_name)
                 return
             
-            # Check if message already exists
+            # Check if message already exists by msg_uid
             existing = request.env['waha.message'].sudo().search([
                 ('msg_uid', '=', msg_uid),
                 ('wa_account_id', '=', account.id)
             ], limit=1)
-            
+
             if existing:
                 _logger.info('Message already exists: %s', existing.id)
                 return
-            
+
             # Extract message context
             context = self._extract_message_context(payload)
+
+            # Race-condition guard for fromMe=True messages.
+            #
+            # When Odoo sends via the WAHA API, WAHA fires the message.any webhook
+            # nearly simultaneously with returning the HTTP response. Odoo's send
+            # transaction may not have committed yet, so message 1574 is invisible
+            # to this webhook thread even though it was just created.
+            #
+            # PostgreSQL READ COMMITTED guarantees that each new SELECT statement
+            # sees the latest committed data — so retrying the search after a short
+            # sleep WILL see the record once Thread 15 commits.
+            #
+            # For source='api' (messages sent by Odoo): retry up to 5 times (100 ms
+            # between attempts → max 400 ms wait). For source='phone' (user tapped
+            # send on their handset): single attempt, no wait.
+            if context['from_me']:
+                source = payload.get('source', '')
+                is_api_source = (source == 'api')
+                max_attempts = 5 if is_api_source else 1
+
+                for attempt in range(max_attempts):
+                    if attempt > 0:
+                        time.sleep(1)
+                        # Re-check by msg_uid first (Thread 15 may have committed by now)
+                        refreshed = request.env['waha.message'].sudo().search([
+                            ('msg_uid', '=', msg_uid),
+                            ('wa_account_id', '=', account.id),
+                        ], limit=1)
+                        if refreshed:
+                            _logger.info(
+                                'fromMe msg_uid found on retry attempt %d: waha.message %s',
+                                attempt, refreshed.id,
+                            )
+                            return
+
+                    if context['body'] and context['chat_id']:
+                        twin = request.env['waha.message'].sudo().search([
+                            ('wa_account_id', '=', account.id),
+                            ('raw_chat_id', '=', context['chat_id']),
+                            ('message_type', '=', 'outbound'),
+                            ('body', '=', context['body']),
+                            ('msg_uid', '=', False),
+                        ], order='id desc', limit=1)
+                        if twin:
+                            _logger.info(
+                                'fromMe webhook matched outbound waha.message %s '
+                                '(attempt %d, source=%s) — stamping msg_uid %s',
+                                twin.id, attempt, source, msg_uid,
+                            )
+                            twin.sudo().write({'msg_uid': msg_uid})
+                            return
+
+                if is_api_source:
+                    _logger.warning(
+                        'fromMe+source=api msg_uid=%s: no twin found after %d attempts. '
+                        'Falling back to creating a new waha.message.',
+                        msg_uid, max_attempts,
+                    )
             
             # Validate payload for raw_payload
             if not payload or not isinstance(payload, dict):
@@ -158,8 +217,14 @@ class WahaWebhookController(http.Controller):
                 else:
                     _logger.warning('Reply to message with ID %s not found', stanza_id)
             
-            message = request.env['waha.message'].sudo().create(vals)
-            _logger.info('Created waha.message: %s (type=%s, relations auto-computed)', 
+            message_env = request.env['waha.message'].sudo()
+            if context['from_me']:
+                message_env = message_env.with_context(
+                    allow_outbound_discuss_sync=True,
+                    waha_webhook_source=payload.get('source', ''),
+                )
+            message = message_env.create(vals)
+            _logger.info('Created waha.message: %s (type=%s, relations auto-computed)',
                         message.id, context['from_me'] and 'outbound' or 'inbound')
             
             # Get auto-computed chat and partner
@@ -221,18 +286,25 @@ class WahaWebhookController(http.Controller):
         """
         # Extract basic info
         from_raw = payload.get('from', '')
+        to_raw = payload.get('to', '')
         from_me = payload.get('fromMe', False)
         participant = payload.get('participant', '')
-        
-        _logger.info('Extracting context: from=%s, fromMe=%s, participant=%s', from_raw, from_me, participant)
-        
-        # Determine chat type
-        is_group = '@g.us' in from_raw
-        chat_id = from_raw
-        
-        # Extract sender ID (could be LID or phone)
-        sender_raw = participant if (is_group and participant) else from_raw
-        
+
+        _logger.info('Extracting context: from=%s, to=%s, fromMe=%s, participant=%s', from_raw, to_raw, from_me, participant)
+
+        # For outbound (fromMe=True) the chat is identified by the recipient.
+        # For inbound, the chat is identified by the sender.
+        chat_id = to_raw if from_me else from_raw
+        is_group = '@g.us' in chat_id
+
+        # sender_raw represents the contact (the other party), used to resolve waha.partner.
+        # For outbound: contact is the recipient (to_raw for 1-1, participant for groups).
+        # For inbound: contact is the sender (from_raw for 1-1, participant for groups).
+        if from_me:
+            sender_raw = participant if (is_group and participant) else to_raw
+        else:
+            sender_raw = participant if (is_group and participant) else from_raw
+
         _logger.info('Sender raw: %s (is_group=%s)', sender_raw, is_group)
         
         # Determine if it's a LID or phone number

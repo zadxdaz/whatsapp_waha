@@ -431,10 +431,26 @@ class WahaMessage(models.Model):
         This ensures all messages from the same chat are in the same channel.
         """
         for message in self:
-            # Skip if already has mail_message_id
+            # Skip if already has mail_message_id (ORM cache check)
             if message.mail_message_id:
                 _logger.debug('Message %s already has mail_message_id: %s', message.id, message.mail_message_id.id)
                 continue
+
+            # Guard against multiple compute triggers within the same transaction.
+            # waha_chat_id and waha_partner_id are also computed fields, so Odoo can
+            # fire this compute once per dependency that resolves. By the time the
+            # second trigger runs, mail_message_id may already be written in DB even
+            # though the ORM cache still shows False. Read directly from DB.
+            if message.id:
+                self.env.cr.execute(
+                    'SELECT mail_message_id FROM waha_message WHERE id = %s',
+                    (message.id,)
+                )
+                row = self.env.cr.fetchone()
+                if row and row[0]:
+                    _logger.debug('Message %s already has mail_message_id in DB: %s — skipping', message.id, row[0])
+                    message.mail_message_id = row[0]
+                    continue
 
             # Outbound messages posted from Odoo Discuss must already be linked
             # to the mail.message created by message_post(). If they are not,
@@ -486,20 +502,37 @@ class WahaMessage(models.Model):
             try:
                 # Clean HTML from body
                 body_clean = re.sub(r'<[^>]+>', '', message.body or '').strip()
-                
+
                 # Ensure we have a valid partner for author_id
                 if not message.waha_partner_id or not message.waha_partner_id.partner_id:
                     _logger.warning('No waha_partner_id or partner_id for message %s, cannot create discuss message', message.id)
                     message.mail_message_id = False
                     continue
-                
+
                 if message.message_type == 'outbound':
                     author_partner = (
-                        message.wa_account_id.notify_user_ids[:1].partner_id
+                        message.wa_account_id.account_partner_id
+                        or message.wa_account_id.notify_user_ids[:1].partner_id
                         or self.env.user.partner_id
                     )
                 else:
                     author_partner = message.waha_partner_id.partner_id
+
+                # Before creating, check if a matching mail.message already exists
+                # in the channel (guards against duplicate triggers / resyncs).
+                # Skip for phone-sent messages (source='app'/'web'/'mobile') —
+                # those are always new messages and should never match old posts.
+                waha_webhook_source = self.env.context.get('waha_webhook_source', '')
+                is_phone_source = waha_webhook_source and waha_webhook_source != 'api'
+                if not is_phone_source:
+                    existing_mail = message._find_existing_discuss_mail_message()
+                    if existing_mail:
+                        _logger.info(
+                            'Found existing discuss message %s for waha.message %s — linking instead of creating',
+                            existing_mail.id, message.id,
+                        )
+                        message.mail_message_id = existing_mail
+                        continue
 
                 # Prepare post params
                 post_params = {
@@ -509,10 +542,10 @@ class WahaMessage(models.Model):
                     'author_id': author_partner.id,
                 }
                 _logger.info('Author partner for discuss message: %s', post_params['author_id'])
-                
+
                 if message.wa_timestamp:
                     post_params['date'] = message.wa_timestamp
-                
+
                 # Add parent_id if this is a reply.  Do not force-create
                 # missing outbound parents: that duplicates Discuss messages.
                 if message.reply_to_message_id:
@@ -523,22 +556,22 @@ class WahaMessage(models.Model):
                         _logger.info('Setting parent_id=%s for reply in Discuss', post_params['parent_id'])
                     else:
                         _logger.warning('Cannot set parent_id: parent message %s has no resolvable mail_message_id', message.reply_to_message_id.id)
-                
+
                 _logger.info('message_post params: %s', post_params)
-                
+
                 # Create message (with flag to prevent recursion)
                 _logger.info('Calling message_post on channel %s (type=%s)', discuss_channel.id, discuss_channel.channel_type)
                 discuss_msg = discuss_channel.with_context(
                     skip_whatsapp_send=True
                 ).message_post(**post_params)
-                
+
                 _logger.info('message_post returned: %s', discuss_msg.id if discuss_msg else None)
-                
+
                 message.mail_message_id = discuss_msg
-                
+
                 _logger.info(
                     'Created discuss message %s for waha.message %s',
-                    discuss_msg.id, message.id
+                    discuss_msg.id, message.id,
                 )
             except Exception as e:
                 _logger.exception(
@@ -558,19 +591,33 @@ class WahaMessage(models.Model):
         """Return the partner that should author this message in Discuss."""
         self.ensure_one()
         if self.message_type == 'outbound':
-            return self.wa_account_id.notify_user_ids[:1].partner_id or self.env.user.partner_id
+            return (
+                self.wa_account_id.account_partner_id
+                or self.wa_account_id.notify_user_ids[:1].partner_id
+                or self.env.user.partner_id
+            )
         return self.waha_partner_id.partner_id if self.waha_partner_id else self.env['res.partner']
 
     def _find_existing_discuss_mail_message(self):
         """Find a unique existing Discuss mail.message for this WAHA message.
 
         This is intentionally lookup-only: it never creates a Discuss message.
-        It repairs historical outbound records whose `mail_message_id` was not
-        linked even though the original Odoo Discuss post still exists.
+        Used to:
+        - Repair historical outbound records whose mail_message_id was not linked.
+        - Handle the API-send race condition where Odoo's transaction commits just
+          before the webhook creates a waha.message.
+
+        The search is intentionally strict:
+        - Only matches within a 30-second window of the WhatsApp timestamp.
+        - Never matches a mail.message already linked to another waha.message.
         """
         self.ensure_one()
         channel = self.waha_chat_id.discuss_channel_id if self.waha_chat_id else False
         if not channel:
+            return self.env['mail.message']
+
+        compare_date = self.wa_timestamp or self.sent_date
+        if not compare_date:
             return self.env['mail.message']
 
         base_domain = [
@@ -579,18 +626,16 @@ class WahaMessage(models.Model):
             ('message_type', '=', 'comment'),
         ]
         expected_body = self._clean_discuss_body(self.body)
-        compare_date = self.wa_timestamp or self.sent_date
 
         def _matching_candidates(domain):
             candidates = self.env['mail.message'].sudo().search(domain, order='date desc, id desc', limit=200)
             if expected_body:
                 candidates = candidates.filtered(lambda m: self._clean_discuss_body(m.body) == expected_body)
-            # Prefer candidates near the WhatsApp timestamp/send date when
-            # present, but never guess if more than one candidate remains.
-            if compare_date and len(candidates) > 1:
-                same_date = candidates.filtered(lambda m: m.date and abs((m.date - compare_date).total_seconds()) <= 300)
-                if same_date:
-                    candidates = same_date
+            # Always apply the time window — without it a single-match result
+            # would be returned even if it is hours old (false positive).
+            candidates = candidates.filtered(
+                lambda m: m.date and abs((m.date - compare_date).total_seconds()) <= 30
+            )
             return candidates
 
         expected_author = self._expected_discuss_author_partner()
@@ -601,9 +646,18 @@ class WahaMessage(models.Model):
 
         # Historical unlinked outbound messages may have been authored by the
         # actual posting user, not the account notification user. If the strict
-        # author match finds nothing, fall back to a unique channel/body match.
+        # author match finds nothing, fall back to a channel/body match.
         if not candidates:
             candidates = _matching_candidates(base_domain)
+
+        # Exclude candidates already claimed by another waha.message to avoid
+        # linking two waha.messages to the same Discuss post.
+        if candidates:
+            already_linked = self.env['waha.message'].sudo().search([
+                ('mail_message_id', 'in', candidates.ids),
+                ('id', '!=', self.id),
+            ]).mapped('mail_message_id').ids
+            candidates = candidates.filtered(lambda m: m.id not in already_linked)
 
         if len(candidates) == 1:
             _logger.info('Resolved existing Discuss mail.message %s for waha.message %s', candidates.id, self.id)

@@ -100,6 +100,13 @@ class WahaAccount(models.Model):
         help="Users to notify when a message is received"
     )
 
+    account_partner_id = fields.Many2one(
+        'res.partner',
+        string="Account Contact",
+        tracking=True,
+        help="Contact representing this WhatsApp account. Used as the author of messages sent from the phone."
+    )
+
     sync_chat_limit = fields.Integer(
         string="Chats to Sync",
         default=10,
@@ -125,6 +132,30 @@ class WahaAccount(models.Model):
         ('session_name_unique', 'unique(session_name)',
          "Session name must be unique")
     ]
+
+    def write(self, vals):
+        res = super().write(vals)
+        if 'account_partner_id' in vals and vals['account_partner_id']:
+            self._sync_account_partner_to_channels()
+        return res
+
+    def _sync_account_partner_to_channels(self):
+        """Add account_partner_id to all existing discuss channels for this account."""
+        for account in self:
+            if not account.account_partner_id:
+                continue
+            partner_id = account.account_partner_id.id
+            channels = self.env['discuss.channel'].sudo().search([
+                ('whatsapp_account_id', '=', account.id),
+                ('channel_type', 'in', ['waha', 'whatsapp']),
+            ])
+            for channel in channels:
+                if partner_id not in channel.channel_partner_ids.ids:
+                    channel.write({'channel_partner_ids': [(4, partner_id)]})
+            _logger.info(
+                'Synced account_partner_id %s to %d channels for account %s',
+                partner_id, len(channels), account.name,
+            )
 
     @api.depends('session_name')
     def _compute_account_uid(self):

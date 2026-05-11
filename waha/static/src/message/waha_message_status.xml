@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="waha.WahaMessageStatus">
+        <t t-set="info" t-value="statusInfo"/>
+        <t t-if="info">
+            <i t-attf-class="fa {{ info.icon }} {{ info.colorClass }} o-waha-delivery-status ms-1"
+               t-att-title="info.title"
+               aria-hidden="true"/>
+        </t>
+    </t>
+
+    <t t-name="waha.MessageStatusPatch" t-inherit="mail.Message" t-inherit-mode="extension">
+        <xpath expr="//div[@name='header']//small[hasclass('o-mail-Message-date')]" position="after">
+            <t t-if="message.waha_delivery_state">
+                <WahaMessageStatus message="message"/>
+            </t>
+        </xpath>
+    </t>
+
+</templates>
