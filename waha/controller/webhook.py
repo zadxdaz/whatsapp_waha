@@ -196,6 +196,11 @@ class WahaWebhookController(http.Controller):
                 'wa_timestamp': context['wa_timestamp'],
                 'raw_payload': valid_payload,
             }
+
+            # Mark messages sent from a physical device (not via the WAHA API from Odoo).
+            # These are stored for visibility only and must never be re-sent.
+            if context['from_me']:
+                vals['sent_from_device'] = (payload.get('source', '') != 'api')
             
             if context['participant']:
                 vals['participant_id'] = context['participant']

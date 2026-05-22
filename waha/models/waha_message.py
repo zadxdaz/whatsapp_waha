@@ -5,12 +5,113 @@ import html
 import logging
 import re
 from datetime import datetime
+from html.parser import HTMLParser
 
 from odoo import models, fields, api, _
 from odoo.exceptions import ValidationError, UserError
 from odoo.addons.waha.tools.waha_api import WahaApi
 
 _logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# HTML → WhatsApp markdown converter
+# ---------------------------------------------------------------------------
+# Odoo Discuss stores rich text as HTML.  WhatsApp uses its own lightweight
+# markdown (*bold*, _italic_, ~strike~, `code`, bullet lists, newlines).
+# Simply stripping tags loses all formatting; this converter preserves it.
+
+class _WaHtmlParser(HTMLParser):
+    """SAX-style parser that converts Odoo HTML to WhatsApp markdown."""
+
+    # Inline tags whose open/close both wrap the content with a marker.
+    _INLINE = {
+        'strong': '*', 'b': '*',
+        'em': '_', 'i': '_',
+        'del': '~', 's': '~', 'strike': '~',
+        'code': '`',
+    }
+
+    def __init__(self):
+        # convert_charrefs=True decodes &amp; &nbsp; etc. automatically
+        super().__init__(convert_charrefs=True)
+        self._parts = []
+        self._in_pre = False
+        self._in_blockquote = False
+
+    # -- tag handlers --------------------------------------------------------
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        if t == 'br':
+            self._parts.append('\n')
+        elif t in ('p', 'div', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+            # Inside a blockquote the '> ' marker already started the line;
+            # suppress the leading newline so we don't get "> \ntext".
+            if not self._in_blockquote and self._parts and not self._parts[-1].endswith('\n'):
+                self._parts.append('\n')
+        elif t == 'li':
+            self._parts.append('• ')
+        elif t == 'pre':
+            self._in_pre = True
+            self._parts.append('```\n')
+        elif t == 'blockquote':
+            self._in_blockquote = True
+            if self._parts and not self._parts[-1].endswith('\n'):
+                self._parts.append('\n')
+            self._parts.append('> ')
+        elif t in self._INLINE:
+            self._parts.append(self._INLINE[t])
+        # <a>, <ul>, <ol>, <span>, <table>, <td>, etc. → just render content
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if t == 'blockquote':
+            self._in_blockquote = False
+            if self._parts and not self._parts[-1].endswith('\n'):
+                self._parts.append('\n')
+        elif t in ('p', 'div', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li'):
+            if not self._in_blockquote:
+                self._parts.append('\n')
+        elif t == 'pre':
+            self._in_pre = False
+            self._parts.append('\n```')
+        elif t in self._INLINE:
+            self._parts.append(self._INLINE[t])
+
+    def handle_data(self, data):
+        # &nbsp; becomes \xa0 after convert_charrefs — normalise to regular space
+        self._parts.append(data.replace('\xa0', ' '))
+
+    # -- result --------------------------------------------------------------
+
+    def get_text(self):
+        text = ''.join(self._parts)
+        # Collapse 3+ consecutive newlines → 2 (single blank line max)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
+
+def _html_to_whatsapp(html_body):
+    """Convert Odoo HTML rich text to WhatsApp markdown plain text.
+
+    Mapping:
+        <strong>/<b>        → *bold*
+        <em>/<i>            → _italic_
+        <del>/<s>/<strike>  → ~strikethrough~
+        <code>              → `code`
+        <pre>               → ```block```
+        <br>, </p>, </div>  → newline
+        <li>                → bullet (•)
+        <blockquote>        → > prefix
+        everything else     → text content only (tags stripped)
+    """
+    if not html_body:
+        return ''
+    parser = _WaHtmlParser()
+    parser.feed(html_body)
+    return parser.get_text()
+# ---------------------------------------------------------------------------
 
 
 class WahaMessage(models.Model):
@@ -197,8 +298,16 @@ class WahaMessage(models.Model):
         help="Complete JSON payload from WAHA webhook"
     )
     
+    sent_from_device = fields.Boolean(
+        string="Sent from Device",
+        default=False,
+        help="True when this outbound message was sent directly from a physical device "
+             "(not dispatched by Odoo through the WAHA API). "
+             "These messages are stored for visibility only — they must never be re-sent."
+    )
+
     active = fields.Boolean(default=True)
-    
+
     _sql_constraints = [
         ('unique_msg_uid',
          'unique(msg_uid, wa_account_id)',
@@ -720,6 +829,10 @@ class WahaMessage(models.Model):
             # Skip if not outgoing state
             if message.state != 'outgoing':
                 continue
+
+            # Never re-send messages that came in from a physical device
+            if message.sent_from_device:
+                continue
             
             # Need chat and account to send
             if not message.waha_chat_id or not message.wa_account_id:
@@ -742,103 +855,83 @@ class WahaMessage(models.Model):
             try:
                 api = WahaApi(message.wa_account_id)
 
-                # Prepare message data
                 chat_wa_id = message.waha_chat_id.wa_chat_id
-                body_clean = re.sub(r'<[^>]+>', '', message.body or '').strip()
-                
-                if not body_clean and not message.attachment_ids:
+                body_clean = _html_to_whatsapp(message.body)
+
+                # Sort ascending by id so attachments are sent in the order they
+                # were uploaded, not reversed (ir.attachment default is id desc).
+                attachments = message.attachment_ids.sorted(key=lambda a: a.id)
+
+                if not attachments and not body_clean:
                     _logger.warning('Message %s has no body or attachments', message.id)
                     continue
-                
-                # Send based on content type and attachments
-                result = None
-                attachment = message.attachment_ids[0] if message.attachment_ids else None
-                
-                if not attachment:
+
+                first_uid = None
+
+                if not attachments:
                     # Text-only message
                     _logger.info('Sending text message to %s', chat_wa_id)
-                    result = api.send_text(
-                        chat_wa_id,
-                        body_clean or '(empty)',
-                        message.reply_to_msg_uid
-                    )
-                    
-                elif message.content_type == 'image' or (attachment.mimetype and attachment.mimetype.startswith('image/')):
-                    # Image message
-                    # Convert datas to string if it's bytes (Odoo can return either)
-                    image_data = attachment.datas
-                    if isinstance(image_data, bytes):
-                        image_data = image_data.decode('utf-8')
-                    
-                    _logger.info('Sending image to %s (mimetype: %s, reply_to: %s)', chat_wa_id, attachment.mimetype, message.reply_to_msg_uid)
-                    result = api.send_image(
-                        chat_wa_id,
-                        image_data,
-                        caption=body_clean if body_clean else None,
-                        filename=attachment.name,
-                        reply_to=message.reply_to_msg_uid
-                    )
-                    
-                elif message.content_type == 'video' or (attachment.mimetype and attachment.mimetype.startswith('video/')):
-                    # Video message
-                    video_data = attachment.datas
-                    if isinstance(video_data, bytes):
-                        video_data = video_data.decode('utf-8')
-                    
-                    _logger.info('Sending video to %s (mimetype: %s, reply_to: %s)', chat_wa_id, attachment.mimetype, message.reply_to_msg_uid)
-                    result = api.send_video(
-                        chat_wa_id,
-                        video_data,
-                        caption=body_clean if body_clean else None,
-                        reply_to=message.reply_to_msg_uid
-                    )
-                    
-                elif message.content_type == 'audio' or (attachment.mimetype and attachment.mimetype.startswith('audio/')):
-                    # Voice/Audio message
-                    audio_data = attachment.datas
-                    if isinstance(audio_data, bytes):
-                        audio_data = audio_data.decode('utf-8')
-                    
-                    _logger.info('Sending audio to %s (mimetype: %s, reply_to: %s)', chat_wa_id, attachment.mimetype, message.reply_to_msg_uid)
-                    result = api.send_voice(
-                        chat_wa_id,
-                        audio_data,
-                        convert=True,  # Auto-convert to opus format
-                        reply_to=message.reply_to_msg_uid
-                    )
-                    
+                    result = api.send_text(chat_wa_id, body_clean, message.reply_to_msg_uid)
+                    if result and result.get('id'):
+                        first_uid = result['id']
                 else:
-                    # Document/File message (default for any other type)
-                    file_data = attachment.datas
-                    if isinstance(file_data, bytes):
-                        file_data = file_data.decode('utf-8')
-                    
-                    _logger.info('Sending file to %s (mimetype: %s, reply_to: %s)', chat_wa_id, attachment.mimetype, message.reply_to_msg_uid)
-                    result = api.send_file(
-                        chat_wa_id,
-                        file_data,
-                        attachment.name,
-                        attachment.mimetype,
-                        caption=body_clean if body_clean else None,
-                        reply_to=message.reply_to_msg_uid
-                    )
-                
-                # Update with result
-                if result and result.get('id'):
-                    # waha_api already normalizes the response to extract _serialized
-                    message.msg_uid = result.get('id')
+                    # Send every attachment; caption and reply_to only on the first.
+                    for idx, att in enumerate(attachments):
+                        caption = body_clean if idx == 0 else None
+                        reply_to = message.reply_to_msg_uid if idx == 0 else None
+                        mime = att.mimetype or ''
+
+                        raw = att.datas
+                        if isinstance(raw, bytes):
+                            raw = raw.decode('utf-8')
+
+                        _logger.info(
+                            'Sending attachment %d/%d for message %s: name=%s, mime=%s',
+                            idx + 1, len(attachments), message.id, att.name, mime,
+                        )
+
+                        if mime.startswith('image/'):
+                            result = api.send_image(
+                                chat_wa_id, raw,
+                                caption=caption, filename=att.name, reply_to=reply_to,
+                            )
+                        elif mime.startswith('video/'):
+                            result = api.send_video(
+                                chat_wa_id, raw,
+                                caption=caption, reply_to=reply_to,
+                            )
+                        elif mime.startswith('audio/'):
+                            result = api.send_voice(
+                                chat_wa_id, raw,
+                                convert=True, reply_to=reply_to,
+                            )
+                        else:
+                            result = api.send_file(
+                                chat_wa_id, raw, att.name, mime,
+                                caption=caption, reply_to=reply_to,
+                            )
+
+                        if result and result.get('id'):
+                            if first_uid is None:
+                                first_uid = result['id']
+                            _logger.info(
+                                'Attachment %d/%d sent, uid=%s',
+                                idx + 1, len(attachments), result['id'],
+                            )
+                        else:
+                            _logger.warning(
+                                'Attachment %d/%d returned no id for message %s',
+                                idx + 1, len(attachments), message.id,
+                            )
+
+                if first_uid:
+                    message.msg_uid = first_uid
                     message.state = 'sent'
                     message.sent_date = fields.Datetime.now()
-                    
-                    _logger.info(
-                        'Auto-sent message %s, got msg_uid: %s',
-                        message.id, message.msg_uid
-                    )
-                    
-                    # Update chat metadata
+                    _logger.info('Auto-sent message %s, first msg_uid: %s', message.id, first_uid)
                     if message.waha_chat_id:
                         message.waha_chat_id.update_last_message()
-                
+
             except Exception as e:
                 error_msg = str(e)
                 _logger.error('Failed to auto-send message %s: %s', message.id, error_msg)
@@ -1222,30 +1315,38 @@ class WahaMessage(models.Model):
         try:
             api = WahaApi(self.wa_account_id)
 
-            # Prepare message data
             chat_wa_id = self.waha_chat_id.wa_chat_id
-            body_clean = re.sub(r'<[^>]+>', '', self.body).strip()
-            
-            # Send based on content type
-            if self.content_type == 'text':
+            body_clean = _html_to_whatsapp(self.body)
+
+            attachments = self.attachment_ids.sorted(key=lambda a: a.id)
+            first_uid = None
+
+            if not attachments:
                 result = api.send_text(chat_wa_id, body_clean, self.reply_to_msg_uid)
+                if result and result.get('id'):
+                    first_uid = result['id']
             else:
-                # Handle media sending
-                if self.attachment_ids:
-                    attachment = self.attachment_ids[0]
-                    result = api.send_file(
-                        chat_wa_id,
-                        attachment.datas,
-                        attachment.name,
-                        attachment.mimetype,
-                        body_clean
-                    )
-                else:
-                    # Fallback to text
-                    result = api.send_text(chat_wa_id, body_clean, self.reply_to_msg_uid)
-            
-            # Update message with result
-            msg_uid = result.get('id', '')
+                for idx, att in enumerate(attachments):
+                    caption = body_clean if idx == 0 else None
+                    reply_to = self.reply_to_msg_uid if idx == 0 else None
+                    mime = att.mimetype or ''
+                    raw = att.datas
+                    if isinstance(raw, bytes):
+                        raw = raw.decode('utf-8')
+
+                    if mime.startswith('image/'):
+                        result = api.send_image(chat_wa_id, raw, caption=caption, filename=att.name, reply_to=reply_to)
+                    elif mime.startswith('video/'):
+                        result = api.send_video(chat_wa_id, raw, caption=caption, reply_to=reply_to)
+                    elif mime.startswith('audio/'):
+                        result = api.send_voice(chat_wa_id, raw, convert=True, reply_to=reply_to)
+                    else:
+                        result = api.send_file(chat_wa_id, raw, att.name, mime, caption=caption, reply_to=reply_to)
+
+                    if result and result.get('id') and first_uid is None:
+                        first_uid = result['id']
+
+            msg_uid = first_uid or ''
             self.write({
                 'state': 'sent',
                 'msg_uid': msg_uid,
