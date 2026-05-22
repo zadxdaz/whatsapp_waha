@@ -114,6 +114,25 @@ class WahaWebhookController(http.Controller):
                 _logger.info('Message already exists: %s', existing.id)
                 return
 
+            # Check if this uid belongs to a multi-attachment batch sent by Odoo.
+            # When N images are sent in one Discuss message, Odoo issues N WAHA API
+            # calls and stores all resulting uids in attachment_msg_uids. Only the
+            # first uid is written to msg_uid, so webhooks for uids 2..N would
+            # otherwise create duplicate waha.message records.
+            request.env.cr.execute(
+                """SELECT id FROM waha_message
+                   WHERE wa_account_id = %s
+                   AND attachment_msg_uids::jsonb @> %s::jsonb
+                   LIMIT 1""",
+                (account.id, json.dumps([msg_uid])),
+            )
+            if request.env.cr.fetchone():
+                _logger.info(
+                    'msg_uid %s is a secondary attachment uid — skipping duplicate creation',
+                    msg_uid,
+                )
+                return
+
             # Extract message context
             context = self._extract_message_context(payload)
 

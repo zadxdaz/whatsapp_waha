@@ -306,6 +306,13 @@ class WahaMessage(models.Model):
              "These messages are stored for visibility only — they must never be re-sent."
     )
 
+    attachment_msg_uids = fields.Json(
+        string="Attachment Message UIDs",
+        help="List of WAHA message IDs for each individual attachment sent in a "
+             "multi-attachment message. Used to deduplicate webhook echoes when a "
+             "single Odoo message triggers multiple WAHA sends."
+    )
+
     active = fields.Boolean(default=True)
 
     _sql_constraints = [
@@ -866,14 +873,14 @@ class WahaMessage(models.Model):
                     _logger.warning('Message %s has no body or attachments', message.id)
                     continue
 
-                first_uid = None
+                all_uids = []
 
                 if not attachments:
                     # Text-only message
                     _logger.info('Sending text message to %s', chat_wa_id)
                     result = api.send_text(chat_wa_id, body_clean, message.reply_to_msg_uid)
                     if result and result.get('id'):
-                        first_uid = result['id']
+                        all_uids.append(result['id'])
                 else:
                     # Send every attachment; caption and reply_to only on the first.
                     for idx, att in enumerate(attachments):
@@ -912,8 +919,7 @@ class WahaMessage(models.Model):
                             )
 
                         if result and result.get('id'):
-                            if first_uid is None:
-                                first_uid = result['id']
+                            all_uids.append(result['id'])
                             _logger.info(
                                 'Attachment %d/%d sent, uid=%s',
                                 idx + 1, len(attachments), result['id'],
@@ -924,11 +930,18 @@ class WahaMessage(models.Model):
                                 idx + 1, len(attachments), message.id,
                             )
 
-                if first_uid:
-                    message.msg_uid = first_uid
+                if all_uids:
+                    message.msg_uid = all_uids[0]
                     message.state = 'sent'
                     message.sent_date = fields.Datetime.now()
-                    _logger.info('Auto-sent message %s, first msg_uid: %s', message.id, first_uid)
+                    # Store all uids so the webhook dedup can silence the echoes
+                    # for attachments 2..N without creating duplicate records.
+                    if len(all_uids) > 1:
+                        message.attachment_msg_uids = all_uids
+                    _logger.info(
+                        'Auto-sent message %s: %d uid(s) %s',
+                        message.id, len(all_uids), all_uids,
+                    )
                     if message.waha_chat_id:
                         message.waha_chat_id.update_last_message()
 
