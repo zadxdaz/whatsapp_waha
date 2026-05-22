@@ -659,6 +659,19 @@ class WahaMessage(models.Model):
                 }
                 _logger.info('Author partner for discuss message: %s', post_params['author_id'])
 
+                # Resolve WhatsApp @mentions to Odoo partner IDs so that:
+                # - Discuss highlights the mention visually
+                # - "Solo menciones" notification preference fires for those users
+                mentioned_ids = (message.raw_payload or {}).get('mentionedIds', [])
+                if mentioned_ids:
+                    mention_partner_ids = message._resolve_wa_mentions_to_partner_ids(mentioned_ids)
+                    if mention_partner_ids:
+                        post_params['partner_ids'] = mention_partner_ids
+                        _logger.info(
+                            'Resolved %d WhatsApp mention(s) to partner IDs: %s',
+                            len(mention_partner_ids), mention_partner_ids,
+                        )
+
                 if message.wa_timestamp:
                     post_params['date'] = message.wa_timestamp
 
@@ -965,7 +978,50 @@ class WahaMessage(models.Model):
     # ============================================================
     # HELPER METHODS
     # ============================================================
-    
+
+    def _resolve_wa_mentions_to_partner_ids(self, mentioned_ids):
+        """Resolve a list of WhatsApp mention IDs to res.partner IDs.
+
+        Each entry in `mentioned_ids` is a full WAHA id such as
+        ``"11932090237110@lid"`` or ``"5491234567890@c.us"``.
+        Lookup order mirrors _resolve_mentions() in the webhook controller:
+        1. By LID (most reliable)
+        2. By phone number
+
+        Returns a plain list of res.partner IDs (no duplicates).
+        """
+        self.ensure_one()
+        WahaPartner = self.env['waha.partner'].sudo()
+        partner_ids = []
+        seen = set()
+        for raw_id in (mentioned_ids or []):
+            if not raw_id:
+                continue
+            parts = raw_id.split('@')
+            numeric = parts[0]
+            suffix = parts[1] if len(parts) > 1 else ''
+            wp = None
+            if suffix == 'lid':
+                wp = WahaPartner.search([
+                    ('lid', '=', numeric),
+                    ('wa_account_id', '=', self.wa_account_id.id),
+                ], limit=1)
+            if not wp:
+                wp = WahaPartner.search([
+                    ('phone_number', '=', numeric),
+                    ('wa_account_id', '=', self.wa_account_id.id),
+                ], limit=1)
+            if wp and wp.partner_id and wp.partner_id.id not in seen:
+                seen.add(wp.partner_id.id)
+                partner_ids.append(wp.partner_id.id)
+                _logger.info(
+                    'Resolved WA mention %s → partner %s (%s)',
+                    raw_id, wp.partner_id.id, wp.partner_id.name,
+                )
+            else:
+                _logger.info('Could not resolve WA mention %s to a known partner', raw_id)
+        return partner_ids
+
     def create_discuss_message(self, discuss_channel=None, author_partner=None):
         """
         Trigger creation of discuss message (now handled by computed field)
