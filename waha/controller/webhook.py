@@ -417,7 +417,9 @@ class WahaWebhookController(http.Controller):
             suffix = raw_id.split('@')[1] if '@' in raw_id else ''
 
             partner = None
-            if suffix == 'lid':
+            # Try LID lookup for @lid entries AND for bare numeric IDs (no suffix).
+            # WAHA sometimes omits the @lid suffix in mentionedIds.
+            if suffix in ('lid', ''):
                 partner = WahaPartner.search([('lid', '=', numeric)], limit=1)
             if not partner:
                 partner = WahaPartner.search([('phone_number', '=', numeric)], limit=1)

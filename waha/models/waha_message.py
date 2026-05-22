@@ -1001,7 +1001,9 @@ class WahaMessage(models.Model):
             numeric = parts[0]
             suffix = parts[1] if len(parts) > 1 else ''
             wp = None
-            if suffix == 'lid':
+            # Try LID lookup for @lid entries AND for bare numeric IDs (no suffix).
+            # WAHA sometimes omits the @lid suffix in mentionedIds.
+            if suffix in ('lid', ''):
                 wp = WahaPartner.search([
                     ('lid', '=', numeric),
                     ('wa_account_id', '=', self.wa_account_id.id),
