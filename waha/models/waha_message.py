@@ -3,6 +3,7 @@
 import base64
 import html
 import logging
+import os
 import re
 from datetime import datetime
 from html.parser import HTMLParser
@@ -1128,6 +1129,21 @@ class WahaMessage(models.Model):
             _logger.error('Failed to download %s from URL: %s', content_type, str(e))
             return []
         
+        # Transcode problematic audio formats (ogg/opus/amr/aac) to MP3 so the
+        # Discuss player works in every browser (Safari can't play OGG/Opus).
+        # The mail.message attachment gets the MP3; waha.message keeps the
+        # original binary as a faithful record.
+        transcoded_binary = None
+        transcoded_mimetype = None
+        transcoded_filename = None
+        if content_type == 'audio' and self._should_transcode_audio(mimetype):
+            transcoded_binary = self._transcode_audio_to_mp3(media_binary)
+            if transcoded_binary:
+                transcoded_mimetype = 'audio/mpeg'
+                transcoded_filename = re.sub(r'\.[^.]+$', '', filename) + '.mp3'
+                _logger.info('Transcoded audio to MP3: %s -> %s (%d bytes)',
+                             filename, transcoded_filename, len(transcoded_binary))
+        
         # Create attachments
         if media_binary:
             try:
@@ -1148,13 +1164,16 @@ class WahaMessage(models.Model):
                 
                 _logger.info('Attachment created for waha.message: id=%s', attachment_waha.id)
                 
-                # Create a COPY for mail.message (for Discuss UI)
+                # Create a COPY for mail.message (for Discuss UI).
+                # If the audio was transcoded, the mail.message attachment is the
+                # MP3 version (playable everywhere), while waha.message above keeps
+                # the original binary.
                 if self.mail_message_id:
                     attachment_mail = self.env['ir.attachment'].sudo().create({
-                        'name': filename,
+                        'name': transcoded_filename or filename,
                         'type': 'binary',
-                        'datas': base64.b64encode(media_binary),
-                        'mimetype': mimetype,
+                        'datas': base64.b64encode(transcoded_binary if transcoded_binary is not None else media_binary),
+                        'mimetype': transcoded_mimetype or mimetype,
                         'res_model': 'mail.message',
                         'res_id': self.mail_message_id.id,
                     })
@@ -1291,6 +1310,61 @@ class WahaMessage(models.Model):
             'text/plain': 'document',
         }
         return mime_mapping.get(normalized, '')
+
+    @classmethod
+    def _should_transcode_audio(cls, mimetype):
+        """Whether the given audio mimetype needs transcoding to play everywhere.
+
+        WhatsApp voice notes arrive as OGG/Opus, which Safari cannot play in
+        <audio>. AMR and raw AAC have the same browser support gap, so they are
+        converted to MP3. MP3, M4A/AAC and WAV are already universally playable.
+        """
+        normalized = cls._normalize_mimetype(mimetype)
+        return normalized in {'audio/ogg', 'audio/opus', 'audio/amr', 'audio/aac'}
+
+    @staticmethod
+    def _transcode_audio_to_mp3(media_binary, timeout=60):
+        """Transcode audio bytes to MP3 using ffmpeg.
+
+        Returns MP3 bytes on success, or None if ffmpeg is missing or the
+        conversion fails (callers fall back to the original binary).
+        """
+        import shutil
+        import subprocess
+        import tempfile
+
+        if not shutil.which('ffmpeg'):
+            _logger.warning('ffmpeg not found - keeping original audio')
+            return None
+
+        tmp_in_path = None
+        tmp_out_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.audio', delete=False) as tmp_in, \
+                    tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp_out:
+                tmp_in_path = tmp_in.name
+                tmp_out_path = tmp_out.name
+                tmp_in.write(media_binary)
+
+            cmd = [
+                'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+                '-i', tmp_in_path,
+                '-vn', '-codec:a', 'libmp3lame', '-q:a', '5',
+                '-f', 'mp3', tmp_out_path,
+            ]
+            subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
+            with open(tmp_out_path, 'rb') as f:
+                return f.read()
+        except Exception as e:
+            _logger.warning('Failed to transcode audio to MP3: %s', str(e))
+            return None
+        finally:
+            for path in (tmp_in_path, tmp_out_path):
+                if path:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
 
     def _get_default_filename(self, content_type, mimetype=None):
         """Get default filename for content type based on mimetype"""
