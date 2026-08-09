@@ -1091,7 +1091,13 @@ class WahaMessage(models.Model):
             _logger.warning('No media URL in payload for %s', content_type)
             return []
         
-        mimetype = media.get('mimetype') or self._get_default_mimetype(content_type)
+        # Normalize the mimetype (strip parameters like '; codecs=opus') so Odoo's
+        # web player and the extension inference work reliably for every engine.
+        mimetype = (
+            self._normalize_mimetype(media.get('mimetype'))
+            or self._normalize_mimetype(payload.get('mimetype'))
+            or self._get_default_mimetype(content_type)
+        )
         filename = media.get('filename') or self._get_default_filename(content_type, mimetype)
         
         # Download media from URL
@@ -1182,34 +1188,115 @@ class WahaMessage(models.Model):
         return defaults.get(content_type, 'application/octet-stream')
     
     def _detect_content_type(self, payload):
-        """Detect content type from WAHA payload"""
+        """Detect content type from a WAHA payload.
+
+        WAHA engines expose the media type differently:
+        - WEBJS/WPP: ``payload.type`` or ``_data.type`` (e.g. ``'ptt'``).
+        - NOWEB: no ``type`` field at all (neither top-level nor in ``_data``,
+          which holds the raw Baileys WAMessage). The only reliable signals
+          are ``media.mimetype`` and the Baileys content key in
+          ``_data.message`` (``audioMessage``, ``imageMessage``, ...).
+
+        Resolution order: explicit type -> mimetype -> Baileys content key.
+        Voice notes can also arrive as a document carrying an audio mimetype,
+        so the mimetype wins over the content key in that case.
+        """
         if payload.get('location'):
             return 'location'
-        
-        if payload.get('hasMedia'):
-            # Try to get type from payload.type or _data.type
-            msg_type = payload.get('type')
-            if not msg_type:
-                _data = payload.get('_data', {})
-                msg_type = _data.get('type', 'text')
-            
-            type_mapping = {
-                'image': 'image',
-                'video': 'video',
-                'audio': 'audio',
-                'document': 'document',
-                'sticker': 'sticker',
-                'ptt': 'audio',  # Push-to-talk voice message
+
+        if not payload.get('hasMedia'):
+            return 'text'
+
+        # 1. Explicit type from WEBJS/WPP-style engines (payload.type / _data.type)
+        msg_type = payload.get('type')
+        if not msg_type:
+            _data = payload.get('_data', {})
+            msg_type = _data.get('type', '')
+
+        type_mapping = {
+            'image': 'image',
+            'video': 'video',
+            'audio': 'audio',
+            'document': 'document',
+            'sticker': 'sticker',
+            'ptt': 'audio',  # Push-to-talk voice message
+        }
+        if msg_type in type_mapping:
+            return type_mapping[msg_type]
+
+        # 2. NOWEB: classify from the media mimetype. WAHA exposes it in
+        #    media.mimetype (and sometimes top-level mimetype/mimeType).
+        media = payload.get('media') or {}
+        mimetype = (
+            media.get('mimetype')
+            or payload.get('mimetype')
+            or payload.get('mimeType')
+            or ''
+        )
+        mime_content_type = self._content_type_from_mimetype(mimetype)
+        if mime_content_type:
+            return mime_content_type
+
+        # 3. NOWEB fallback: Baileys content key inside _data.message
+        message_content = (payload.get('_data') or {}).get('message') or {}
+        if isinstance(message_content, dict):
+            key_mapping = {
+                'imageMessage': 'image',
+                'videoMessage': 'video',
+                'audioMessage': 'audio',
+                'stickerMessage': 'sticker',
+                'documentMessage': 'document',
+                'documentWithCaptionMessage': 'document',
             }
-            
-            return type_mapping.get(msg_type, 'document')
-        
-        return 'text'
-    
+            for key in message_content:
+                if key in key_mapping:
+                    return key_mapping[key]
+
+        # Unknown media type - keep a sane default
+        return 'document'
+
+    @staticmethod
+    def _normalize_mimetype(mimetype):
+        """Normalize a mimetype, stripping parameters (e.g. 'audio/ogg; codecs=opus')."""
+        if not mimetype:
+            return ''
+        return str(mimetype).split(';')[0].strip().lower()
+
+    @classmethod
+    def _content_type_from_mimetype(cls, mimetype):
+        """Map a normalized mimetype to a waha content_type, or '' if unknown."""
+        normalized = cls._normalize_mimetype(mimetype)
+        mime_mapping = {
+            'image/jpeg': 'image',
+            'image/jpg': 'image',
+            'image/png': 'image',
+            'image/gif': 'image',
+            'image/webp': 'image',  # WhatsApp stickers also use image/webp
+            'video/mp4': 'video',
+            'video/3gpp': 'video',
+            'video/webm': 'video',
+            'audio/ogg': 'audio',
+            'audio/opus': 'audio',
+            'audio/mpeg': 'audio',
+            'audio/mp3': 'audio',
+            'audio/mp4': 'audio',
+            'audio/x-m4a': 'audio',
+            'audio/aac': 'audio',
+            'audio/wav': 'audio',
+            'audio/amr': 'audio',
+            'application/pdf': 'document',
+            'application/msword': 'document',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'document',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'document',
+            'text/plain': 'document',
+        }
+        return mime_mapping.get(normalized, '')
+
     def _get_default_filename(self, content_type, mimetype=None):
         """Get default filename for content type based on mimetype"""
-        # Try to infer extension from mimetype
-        if mimetype:
+        # Try to infer extension from the normalized mimetype
+        normalized_mime = self._normalize_mimetype(mimetype)
+        if normalized_mime:
             ext_mapping = {
                 'image/jpeg': '.jpg',
                 'image/jpg': '.jpg',
@@ -1217,15 +1304,24 @@ class WahaMessage(models.Model):
                 'image/gif': '.gif',
                 'image/webp': '.webp',
                 'video/mp4': '.mp4',
+                'video/3gpp': '.3gp',
                 'video/webm': '.webm',
                 'audio/ogg': '.ogg',
+                'audio/opus': '.opus',
                 'audio/mpeg': '.mp3',
                 'audio/mp3': '.mp3',
+                'audio/mp4': '.m4a',
+                'audio/x-m4a': '.m4a',
+                'audio/aac': '.aac',
+                'audio/wav': '.wav',
+                'audio/amr': '.amr',
                 'application/pdf': '.pdf',
+                'application/msword': '.doc',
                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
                 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+                'text/plain': '.txt',
             }
-            ext = ext_mapping.get(mimetype)
+            ext = ext_mapping.get(normalized_mime)
             if ext:
                 return f'{content_type}{ext}'
         
