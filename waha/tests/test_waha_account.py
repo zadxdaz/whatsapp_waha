@@ -253,8 +253,7 @@ class TestFetchChatsTimestamps(WahaTestCommon):
             MockApi.return_value.get_chats.return_value = self._build_chat_response()
             MockApi.return_value.get_messages.return_value = self._build_message_response(0)
             with patch('odoo.addons.waha.models.waha_message.WahaApi'):
-                with patch('odoo.addons.waha.models.waha_chat.WahaApi'):
-                    self.account.action_fetch_chats_and_messages()
+                self.account.action_fetch_chats_and_messages()
 
         msg = self.env['waha.message'].search([
             ('msg_uid', '=', 'msg_ts_001'),
@@ -272,8 +271,7 @@ class TestFetchChatsTimestamps(WahaTestCommon):
                 1700000000, '5491112345678@c.us'
             )
             with patch('odoo.addons.waha.models.waha_message.WahaApi'):
-                with patch('odoo.addons.waha.models.waha_chat.WahaApi'):
-                    self.account.action_fetch_chats_and_messages()
+                self.account.action_fetch_chats_and_messages()
 
         msg = self.env['waha.message'].search([
             ('msg_uid', '=', 'msg_ts_001'),
@@ -296,8 +294,7 @@ class TestFetchChatsTimestamps(WahaTestCommon):
             MockApi.return_value.get_chats.return_value = chat_response
             MockApi.return_value.get_messages.return_value = []
             with patch('odoo.addons.waha.models.waha_message.WahaApi'):
-                with patch('odoo.addons.waha.models.waha_chat.WahaApi'):
-                    self.account.action_fetch_chats_and_messages()
+                self.account.action_fetch_chats_and_messages()
 
         self.assertEqual(MockApi.return_value.get_messages.call_count, 2)
         for call in MockApi.return_value.get_messages.call_args_list:
@@ -315,8 +312,7 @@ class TestFetchChatsTimestamps(WahaTestCommon):
                 from_me=True,
             )
             with patch('odoo.addons.waha.models.waha_message.WahaApi'):
-                with patch('odoo.addons.waha.models.waha_chat.WahaApi'):
-                    self.account.action_fetch_chats_and_messages()
+                self.account.action_fetch_chats_and_messages()
 
         msg = self.env['waha.message'].search([
             ('msg_uid', '=', 'msg_from_me_001'),

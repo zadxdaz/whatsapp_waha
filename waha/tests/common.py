@@ -50,16 +50,22 @@ class WahaTestCommon(TransactionCase):
         mock_class = MagicMock(return_value=mock_instance)
         return patch(target, mock_class)
 
-    def make_waha_chat(self, chat_id='5491112345678@c.us', account=None, **kwargs):
-        """Create a waha.chat (and its discuss.channel) for use in tests."""
+    def make_waha_channel(self, chat_id='5491112345678@c.us', account=None, **kwargs):
+        """Create a WhatsApp discuss.channel for use in tests."""
         account = account or self.account
-        with patch('odoo.addons.waha.models.waha_chat.WahaApi'):
-            return self.env['waha.chat'].create({
-                'name': 'Test Chat',
-                'wa_chat_id': chat_id,
-                'wa_account_id': account.id,
-                **kwargs,
-            })
+        channel = self.env['discuss.channel'].create({
+            'name': 'Test Chat',
+            'channel_type': 'waha',
+            'is_whatsapp': True,
+            'wa_chat_id': chat_id,
+            'whatsapp_account_id': account.id,
+            **kwargs,
+        })
+        notify_partners = account.notify_user_ids.mapped('partner_id').ids
+        if not notify_partners:
+            notify_partners = [self.admin_user.partner_id.id]
+        channel.write({'channel_partner_ids': [(6, 0, notify_partners)]})
+        return channel
 
     def make_waha_partner(self, phone='5491112345678', lid=None, partner=None):
         """Create a waha.partner linked to *self.account*."""

@@ -6,7 +6,6 @@ from unittest.mock import patch, MagicMock
 from odoo import fields
 from .common import WahaTestCommon
 
-_CHAT_API = 'odoo.addons.waha.models.waha_chat.WahaApi'
 _PARTNER_API = 'odoo.addons.waha.models.waha_partner.WahaApi'
 _MSG_API = 'odoo.addons.waha.models.waha_message.WahaApi'
 
@@ -162,7 +161,7 @@ class TestHandleIncomingMessage(WahaTestCommon):
         if msg_uid:
             data.setdefault('payload', {})['id'] = msg_uid
         with patch('odoo.addons.waha.controller.webhook.request', mock_req):
-            with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+            with patch(_PARTNER_API), patch(_MSG_API):
                 controller._handle_incoming_message(data)
 
     def _build_data(self, msg_uid='webhook_msg_001', **payload_overrides):
@@ -182,7 +181,7 @@ class TestHandleIncomingMessage(WahaTestCommon):
         controller = _make_controller()
         mock_req = _mock_request(self.env)
         with patch('odoo.addons.waha.controller.webhook.request', mock_req):
-            with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+            with patch(_PARTNER_API), patch(_MSG_API):
                 controller._handle_incoming_message(data)
         msg = self.env['waha.message'].search([
             ('msg_uid', '=', 'webhook_001'),
@@ -195,7 +194,7 @@ class TestHandleIncomingMessage(WahaTestCommon):
         controller = _make_controller()
         mock_req = _mock_request(self.env)
         with patch('odoo.addons.waha.controller.webhook.request', mock_req):
-            with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+            with patch(_PARTNER_API), patch(_MSG_API):
                 controller._handle_incoming_message(data)
         msg = self.env['waha.message'].search([('msg_uid', '=', 'webhook_002')])
         self.assertEqual(msg.message_type, 'inbound')
@@ -206,7 +205,7 @@ class TestHandleIncomingMessage(WahaTestCommon):
         controller = _make_controller()
         mock_req = _mock_request(self.env)
         with patch('odoo.addons.waha.controller.webhook.request', mock_req):
-            with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+            with patch(_PARTNER_API), patch(_MSG_API):
                 controller._handle_incoming_message(data)
         msg = self.env['waha.message'].search([('msg_uid', '=', 'webhook_003')])
         self.assertEqual(msg.message_type, 'outbound')
@@ -216,7 +215,7 @@ class TestHandleIncomingMessage(WahaTestCommon):
         controller = _make_controller()
         mock_req = _mock_request(self.env)
         with patch('odoo.addons.waha.controller.webhook.request', mock_req):
-            with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+            with patch(_PARTNER_API), patch(_MSG_API):
                 controller._handle_incoming_message(data)
                 controller._handle_incoming_message(data)  # second call
         count = self.env['waha.message'].search_count([
@@ -231,7 +230,7 @@ class TestHandleIncomingMessage(WahaTestCommon):
         controller = _make_controller()
         mock_req = _mock_request(self.env)
         with patch('odoo.addons.waha.controller.webhook.request', mock_req):
-            with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+            with patch(_PARTNER_API), patch(_MSG_API):
                 controller._handle_incoming_message(data)
         count_after = self.env['waha.message'].search_count([])
         self.assertEqual(count_before, count_after)
@@ -241,7 +240,7 @@ class TestHandleIncomingMessage(WahaTestCommon):
         controller = _make_controller()
         mock_req = _mock_request(self.env)
         with patch('odoo.addons.waha.controller.webhook.request', mock_req):
-            with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+            with patch(_PARTNER_API), patch(_MSG_API):
                 controller._handle_incoming_message(data)
         msg = self.env['waha.message'].search([('msg_uid', '=', 'webhook_chat_id_001')])
         self.assertEqual(msg.raw_chat_id, '5491112345678@c.us')
@@ -287,9 +286,9 @@ class TestHandleIncomingMessage(WahaTestCommon):
 
 
     def test_reply_to_unlinked_outbound_parent_sets_discuss_parent_id(self):
-        chat = self.make_waha_chat('5491112345678@c.us')
+        chat = self.make_waha_channel('5491112345678@c.us')
         self.make_waha_partner(phone='5491112345678')
-        parent_mail = chat.discuss_channel_id.with_context(skip_whatsapp_send=True).message_post(
+        parent_mail = chat.with_context(skip_whatsapp_send=True).message_post(
             body='Original Odoo message',
             author_id=self.env.user.partner_id.id,
         )
@@ -324,7 +323,7 @@ class TestHandleMessageAck(WahaTestCommon):
     """_handle_message_ack — delegates to update_status_from_webhook."""
 
     def _make_saved_msg(self, uid='ack_hook_msg_001'):
-        chat = self.make_waha_chat('5491100009001@c.us')
+        chat = self.make_waha_channel('5491100009001@c.us')
         return self.env['waha.message'].create({
             'wa_account_id': self.account.id,
             'msg_uid': uid,

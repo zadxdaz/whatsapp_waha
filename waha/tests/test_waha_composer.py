@@ -5,7 +5,6 @@ from unittest.mock import patch, MagicMock
 from odoo.exceptions import ValidationError
 from .common import WahaTestCommon
 
-_CHAT_API = 'odoo.addons.waha.models.waha_chat.WahaApi'
 _PARTNER_API = 'odoo.addons.waha.models.waha_partner.WahaApi'
 _MSG_API = 'odoo.addons.waha.models.waha_message.WahaApi'
 
@@ -58,7 +57,7 @@ class TestActionSendMessage(WahaTestCommon):
             vals['res_id'] = res_id
 
         composer = self.env['waha.composer'].create(vals)
-        with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+        with patch(_PARTNER_API), patch(_MSG_API):
             result = composer.action_send_message()
         return result
 
@@ -81,13 +80,13 @@ class TestActionSendMessage(WahaTestCommon):
         self.assertTrue(msg)
         self.assertEqual(msg.state, 'outgoing')
 
-    def test_chat_created_for_number(self):
+    def test_channel_created_for_number(self):
         self._compose_and_send(mobile='+5491100020001')
-        chat = self.env['waha.chat'].search([
+        channel = self.env['discuss.channel'].search([
             ('wa_chat_id', '=', '5491100020001@c.us'),
-            ('wa_account_id', '=', self.account.id),
+            ('whatsapp_account_id', '=', self.account.id),
         ])
-        self.assertTrue(chat)
+        self.assertTrue(channel)
 
     def test_html_stripped_from_body(self):
         self._compose_and_send(body='<b>Bold text</b>', mobile='+5491100020002')
@@ -149,7 +148,7 @@ class TestActionSendMessage(WahaTestCommon):
             'body': 'With attachment',
             'attachment_ids': [(4, attachment.id)],
         })
-        with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+        with patch(_PARTNER_API), patch(_MSG_API):
             composer.action_send_message()
         msg = self.env['waha.message'].search([
             ('raw_sender_phone', '=', '5491100020004'),
@@ -167,7 +166,7 @@ class TestActionScheduleMessage(WahaTestCommon):
             'mobile_number': '+5491100021001',
             'body': '<p>Scheduled</p>',
         })
-        with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API) as MockMsgApi:
+        with patch(_PARTNER_API), patch(_MSG_API) as MockMsgApi:
             composer.action_schedule_message()
         # The WAHA API must never be called for a draft
         MockMsgApi.return_value.send_text.assert_not_called()
@@ -178,7 +177,7 @@ class TestActionScheduleMessage(WahaTestCommon):
             'mobile_number': '+5491100021002',
             'body': 'Scheduled body',
         })
-        with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+        with patch(_PARTNER_API), patch(_MSG_API):
             composer.action_schedule_message()
         msg = self.env['waha.message'].search([
             ('raw_sender_phone', '=', '5491100021002'),
@@ -193,6 +192,6 @@ class TestActionScheduleMessage(WahaTestCommon):
             'mobile_number': '+5491100021003',
             'body': 'Scheduled',
         })
-        with patch(_CHAT_API), patch(_PARTNER_API), patch(_MSG_API):
+        with patch(_PARTNER_API), patch(_MSG_API):
             result = composer.action_schedule_message()
         self.assertEqual(result['params']['type'], 'info')

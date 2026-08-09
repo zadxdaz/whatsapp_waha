@@ -69,15 +69,6 @@ class MailThread(models.AbstractModel):
                 # Get attachments from the message_post
                 attachment_ids = kwargs.get('attachment_ids', [])
                 
-                # Get waha.chat for this channel
-                waha_chat = self.env['waha.chat'].sudo().search([
-                    ('discuss_channel_id', '=', self.id)
-                ], limit=1)
-                
-                if not waha_chat:
-                    _logger.warning('No waha.chat found for channel %s', self.id)
-                    return result
-                
                 # Create waha.message (will be sent automatically via _compute_msg_uid)
                 try:
                     _logger.info('Creating waha.message for outbound send')
@@ -128,11 +119,12 @@ class MailThread(models.AbstractModel):
                     # Auto-send will happen via _compute_msg_uid
                     waha_message_vals = {
                         'wa_account_id': wa_account.id,
+                        'discuss_channel_id': self.id,
                         'message_type': 'outbound',
                         'content_type': content_type,
                         'state': 'outgoing',
                         'body': message_body,
-                        'raw_chat_id': waha_chat.wa_chat_id,
+                        'raw_chat_id': self.wa_chat_id,
                         'raw_sender_phone': sender_phone,
                         'mail_message_id': mail_message.id if mail_message else False,
                         'reply_to_message_id': reply_to_message_id,

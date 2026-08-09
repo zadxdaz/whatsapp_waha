@@ -6,13 +6,6 @@
               web_icon="waha,static/description/icon.svg"
               sequence="85"/>
 
-    <!-- Chats Menu -->
-    <menuitem id="menu_waha_chat"
-              name="Chats"
-              parent="menu_waha_root"
-              action="action_waha_chat"
-              sequence="10"/>
-
     <!-- Messages Menu -->
     <menuitem id="menu_waha_message"
               name="Messages"

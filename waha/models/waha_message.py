@@ -124,10 +124,10 @@ class WahaMessage(models.Model):
     - Update message status (sent, delivered, read, failed)
     - Create discuss.message entries in channels
     - Handle message attachments (media)
-    - Link to waha.chat and res.partner
+    - Link to discuss.channel and res.partner
     
     Delegates:
-    - Channel management → waha.chat
+    - Conversation management → discuss.channel (channel_type='waha')
     - Contact management → waha.partner
     """
     _name = 'waha.message'
@@ -215,15 +215,15 @@ class WahaMessage(models.Model):
     )
     
     # Links to other models (computed automatically)
-    waha_chat_id = fields.Many2one(
-        'waha.chat',
-        string="Chat",
-        compute='_compute_waha_chat_id',
+    discuss_channel_id = fields.Many2one(
+        'discuss.channel',
+        string="Discuss Channel",
+        compute='_compute_discuss_channel_id',
         store=True,
         readonly=False,
         ondelete='set null',
         index=True,
-        help="WhatsApp chat/conversation this message belongs to"
+        help="WhatsApp conversation channel (discuss.channel) this message belongs to"
     )
     
     waha_partner_id = fields.Many2one(
@@ -321,7 +321,7 @@ class WahaMessage(models.Model):
          "Each WhatsApp message ID must be unique per account.")
     ]
     
-    @api.constrains('waha_chat_id', 'mail_message_id')
+    @api.constrains('discuss_channel_id', 'mail_message_id')
     def _check_chat_channel_consistency(self):
         """
         Ensure all messages from the same chat are in the same discuss channel
@@ -330,7 +330,7 @@ class WahaMessage(models.Model):
         could end up in different discuss channels.
         """
         for message in self:
-            if not message.waha_chat_id or not message.mail_message_id:
+            if not message.discuss_channel_id or not message.mail_message_id:
                 continue
             
             # Get the channel from mail_message
@@ -340,24 +340,18 @@ class WahaMessage(models.Model):
             if not message_channel:
                 continue
             
-            # Get expected channel from waha_chat
-            expected_channel = message.waha_chat_id.discuss_channel_id
-            
-            if not expected_channel:
-                continue
-            
             # Validate they match
-            if message_channel.id != expected_channel.id:
+            if message_channel.id != message.discuss_channel_id.id:
                 raise ValidationError(_(
                     'Message consistency error: Messages from chat "%s" (ID: %s) must all be in the same discuss channel.\n'
                     'Expected channel: "%s" (ID: %s)\n'
                     'Found channel: "%s" (ID: %s)\n\n'
                     'All messages from the same WhatsApp chat must belong to the same discuss channel.'
                 ) % (
-                    message.waha_chat_id.name,
-                    message.waha_chat_id.id,
-                    expected_channel.name,
-                    expected_channel.id,
+                    message.discuss_channel_id.name,
+                    message.discuss_channel_id.id,
+                    message.discuss_channel_id.name,
+                    message.discuss_channel_id.id,
                     message_channel.name,
                     message_channel.id
                 ))
@@ -382,51 +376,27 @@ class WahaMessage(models.Model):
             message.content_type = message._detect_content_type(message.raw_payload)
     
     @api.depends('raw_chat_id', 'wa_account_id')
-    def _compute_waha_chat_id(self):
+    def _compute_discuss_channel_id(self):
         """
-        Auto-compute chat relationship from raw_chat_id
+        Auto-compute channel relationship from raw_chat_id (lookup only)
         
-        This ensures that waha_chat_id is always correctly set,
-        regardless of how the message was created.
+        This is intentionally a pure lookup: it NEVER creates a channel.
+        Channels are created explicitly by the callers (webhook, composer,
+        factories) via discuss.channel.find_or_create_wa().
         """
         for message in self:
             if not message.raw_chat_id or not message.wa_account_id:
-                message.waha_chat_id = False
+                message.discuss_channel_id = False
                 continue
             
-            # Search for existing chat
-            chat = self.env['waha.chat'].search([
+            # Search for existing channel (no auto-create)
+            channel = self.env['discuss.channel'].search([
+                ('is_whatsapp', '=', True),
                 ('wa_chat_id', '=', message.raw_chat_id),
-                ('wa_account_id', '=', message.wa_account_id.id)
+                ('whatsapp_account_id', '=', message.wa_account_id.id)
             ], limit=1)
             
-            if chat:
-                message.waha_chat_id = chat
-            else:
-                # Auto-create chat if missing
-                _logger.info('Auto-creating chat for raw_chat_id: %s', message.raw_chat_id)
-                
-                # Determine partner for 1-1 chats
-                partner = None
-                if message.waha_partner_id:
-                    partner = message.waha_partner_id.partner_id
-                elif '@g.us' not in message.raw_chat_id:
-                    # Try to find res.partner for 1-1 chat (by LID or phone)
-                    waha_partner = self.env['waha.partner'].find_or_create_by_lid_or_phone(
-                        lid=message.raw_sender_lid,
-                        phone=message.raw_sender_phone,
-                        wa_account=message.wa_account_id,
-                        auto_enrich=False
-                    )
-                    if waha_partner and waha_partner.partner_id:
-                        partner = waha_partner.partner_id
-                
-                chat = self.env['waha.chat'].find_or_create(
-                    wa_account=message.wa_account_id,
-                    chat_id=message.raw_chat_id,
-                    partner=partner
-                )
-                message.waha_chat_id = chat
+            message.discuss_channel_id = channel or False
     
     @api.depends('raw_sender_lid', 'raw_sender_phone', 'wa_account_id', 'message_type')
     def _compute_waha_partner_id(self):
@@ -533,18 +503,19 @@ class WahaMessage(models.Model):
                               message.raw_sender_lid, message.raw_sender_phone)
                 message.waha_partner_id = False
     
-    @api.depends('waha_chat_id', 'waha_partner_id', 'body', 'wa_timestamp', 'message_type', 'reply_to_message_id')
+    @api.depends('discuss_channel_id', 'waha_partner_id', 'body', 'wa_timestamp', 'message_type', 'reply_to_message_id')
     def _compute_mail_message_id(self):
         """
         Auto-compute discuss message relationship
         
         Creates mail.message in the discuss channel if:
-        - waha_chat_id exists (with discuss_channel_id)
+        - discuss_channel_id exists
         - waha_partner_id exists (message author)
         - No mail_message_id exists yet
         
-        IMPORTANT: Always uses waha_chat_id.discuss_channel_id as the target channel.
-        This ensures all messages from the same chat are in the same channel.
+        All messages from the same chat land in the same channel by design:
+        the channel is resolved from the WhatsApp chat id (raw_chat_id), and the
+        same channel instance is reused for every message of that chat.
         """
         for message in self:
             # Skip if already has mail_message_id (ORM cache check)
@@ -553,7 +524,7 @@ class WahaMessage(models.Model):
                 continue
 
             # Guard against multiple compute triggers within the same transaction.
-            # waha_chat_id and waha_partner_id are also computed fields, so Odoo can
+            # discuss_channel_id and waha_partner_id are also computed fields, so Odoo can
             # fire this compute once per dependency that resolves. By the time the
             # second trigger runs, mail_message_id may already be written in DB even
             # though the ORM cache still shows False. Read directly from DB.
@@ -582,27 +553,21 @@ class WahaMessage(models.Model):
                 message.mail_message_id = False
                 continue
             
-            _logger.info('Processing message %s for discuss message creation (chat=%s, waha_partner=%s)', 
+            _logger.info('Processing message %s for discuss message creation (channel=%s, waha_partner=%s)', 
                         message.id, 
-                        message.waha_chat_id.id if message.waha_chat_id else None,
+                        message.discuss_channel_id.id if message.discuss_channel_id else None,
                         message.waha_partner_id.id if message.waha_partner_id else None)
             
-            # Need chat and waha_partner to create discuss message
-            if not message.waha_chat_id or not message.waha_partner_id:
-                _logger.warning('Message %s missing chat or waha_partner: chat=%s, waha_partner=%s', 
+            # Need channel and waha_partner to create discuss message
+            if not message.discuss_channel_id or not message.waha_partner_id:
+                _logger.warning('Message %s missing channel or waha_partner: channel=%s, waha_partner=%s', 
                               message.id, 
-                              bool(message.waha_chat_id), 
+                              bool(message.discuss_channel_id), 
                               bool(message.waha_partner_id))
                 message.mail_message_id = False
                 continue
             
-            # CRITICAL: Always use the chat's discuss_channel_id
-            # This is the ONLY valid channel for messages from this chat
-            discuss_channel = message.waha_chat_id.discuss_channel_id
-            if not discuss_channel:
-                _logger.warning('Chat %s has no discuss_channel_id', message.waha_chat_id.id)
-                message.mail_message_id = False
-                continue
+            discuss_channel = message.discuss_channel_id
             
             _logger.info('Using chat channel: %s (id=%s, type=%s)', 
                         discuss_channel.name, 
@@ -741,7 +706,7 @@ class WahaMessage(models.Model):
         - Never matches a mail.message already linked to another waha.message.
         """
         self.ensure_one()
-        channel = self.waha_chat_id.discuss_channel_id if self.waha_chat_id else False
+        channel = self.discuss_channel_id
         if not channel:
             return self.env['mail.message']
 
@@ -828,7 +793,7 @@ class WahaMessage(models.Model):
                 repaired |= message
         return repaired
 
-    @api.depends('waha_chat_id', 'waha_partner_id', 'state', 'body', 'wa_account_id')
+    @api.depends('discuss_channel_id', 'waha_partner_id', 'state', 'body', 'wa_account_id')
     def _compute_msg_uid(self):
         """
         Auto-compute msg_uid by sending message through WAHA
@@ -854,8 +819,8 @@ class WahaMessage(models.Model):
             if message.sent_from_device:
                 continue
             
-            # Need chat and account to send
-            if not message.waha_chat_id or not message.wa_account_id:
+            # Need channel and account to send
+            if not message.discuss_channel_id or not message.wa_account_id:
                 continue
             
             # Check account is connected
@@ -875,7 +840,7 @@ class WahaMessage(models.Model):
             try:
                 api = WahaApi(message.wa_account_id)
 
-                chat_wa_id = message.waha_chat_id.wa_chat_id
+                chat_wa_id = message.discuss_channel_id.wa_chat_id
                 body_clean = _html_to_whatsapp(message.body)
 
                 # Sort ascending by id so attachments are sent in the order they
@@ -955,8 +920,8 @@ class WahaMessage(models.Model):
                         'Auto-sent message %s: %d uid(s) %s',
                         message.id, len(all_uids), all_uids,
                     )
-                    if message.waha_chat_id:
-                        message.waha_chat_id.update_last_message()
+                    if message.discuss_channel_id:
+                        message.discuss_channel_id._touch_wa_activity()
 
             except Exception as e:
                 error_msg = str(e)
@@ -1032,7 +997,7 @@ class WahaMessage(models.Model):
         is computed automatically. Just triggers recomputation.
         
         Args:
-            discuss_channel: Optional, ignored. Always uses waha_chat_id.discuss_channel_id
+            discuss_channel: Optional, ignored. Always uses discuss_channel_id
             author_partner: Optional, for compatibility (not used)
             
         Returns:
@@ -1040,21 +1005,21 @@ class WahaMessage(models.Model):
         """
         self.ensure_one()
         
-        # Validate channel if provided - must match chat's channel
-        if discuss_channel and self.waha_chat_id and self.waha_chat_id.discuss_channel_id:
-            if discuss_channel.id != self.waha_chat_id.discuss_channel_id.id:
+        # Validate channel if provided - must match the message's channel
+        if discuss_channel and self.discuss_channel_id:
+            if discuss_channel.id != self.discuss_channel_id.id:
                 raise ValidationError(_(
                     'Cannot create message in channel "%s" (ID: %s). '
                     'Messages from chat "%s" must be in channel "%s" (ID: %s).'
                 ) % (
                     discuss_channel.name,
                     discuss_channel.id,
-                    self.waha_chat_id.name,
-                    self.waha_chat_id.discuss_channel_id.name,
-                    self.waha_chat_id.discuss_channel_id.id
+                    self.discuss_channel_id.wa_chat_id,
+                    self.discuss_channel_id.name,
+                    self.discuss_channel_id.id
                 ))
         
-        # Force recomputation of mail_message_id (uses chat's channel)
+        # Force recomputation of mail_message_id (uses the message's channel)
         self._compute_mail_message_id()
         
         return self.mail_message_id
@@ -1283,12 +1248,12 @@ class WahaMessage(models.Model):
         """
         self.ensure_one()
         
-        if not self.mail_message_id or not self.waha_chat_id or not self.waha_chat_id.discuss_channel_id:
+        if not self.mail_message_id or not self.discuss_channel_id:
             return
         
         try:
             # Get the discuss channel
-            channel = self.waha_chat_id.discuss_channel_id
+            channel = self.discuss_channel_id
             
             # Notify channel members about the message update
             # This will trigger the frontend to refresh the message and show attachments
@@ -1304,12 +1269,12 @@ class WahaMessage(models.Model):
     # ============================================================
     
     @api.model
-    def send_message(self, chat, partner, body, reply_to=None, attachments=None, mail_message_id=None):
+    def send_message(self, channel, partner, body, reply_to=None, attachments=None, mail_message_id=None):
         """
         Send a new outbound WhatsApp message
         
         Args:
-            chat: waha.chat record
+            channel: discuss.channel record (WhatsApp channel)
             partner: res.partner (recipient)
             body: Message text
             reply_to: waha.message to reply to (optional)
@@ -1322,7 +1287,7 @@ class WahaMessage(models.Model):
         # Find phone number from partner
         waha_partner = self.env['waha.partner'].search([
             ('partner_id', '=', partner.id),
-            ('wa_account_id', '=', chat.wa_account_id.id)
+            ('wa_account_id', '=', channel.whatsapp_account_id.id)
         ], limit=1)
         
         sender_phone = waha_partner.phone_number if waha_partner else partner.mobile or partner.phone
@@ -1331,16 +1296,15 @@ class WahaMessage(models.Model):
         
         # Create waha.message record
         vals = {
-            'wa_account_id': chat.wa_account_id.id,
+            'wa_account_id': channel.whatsapp_account_id.id,
+            'discuss_channel_id': channel.id,
             'message_type': 'outbound',
             'content_type': 'document' if attachments else 'text',
             'state': 'outgoing',
             'body': body,
-            'raw_chat_id': chat.wa_chat_id,
+            'raw_chat_id': channel.wa_chat_id,
             'raw_sender_phone': sender_phone,
         }
-        
-        # Note: waha_chat_id and partner_id will be computed automatically
         
         # Link to existing mail.message if provided (prevents auto-creation)
         if mail_message_id:
@@ -1359,10 +1323,6 @@ class WahaMessage(models.Model):
                 'res_model': 'waha.message',
                 'res_id': message.id,
             })
-        
-        # Note: msg_uid will be computed automatically (auto-sends to WAHA)
-        # Note: mail_message_id will be computed automatically
-        # after waha_chat_id and partner_id are set
         
         return message
     
@@ -1386,7 +1346,10 @@ class WahaMessage(models.Model):
         try:
             api = WahaApi(self.wa_account_id)
 
-            chat_wa_id = self.waha_chat_id.wa_chat_id
+            chat_wa_id = self.discuss_channel_id.wa_chat_id if self.discuss_channel_id else False
+            if not chat_wa_id:
+                _logger.warning('Message %s has no discuss channel', self.id)
+                return ''
             body_clean = _html_to_whatsapp(self.body)
 
             attachments = self.attachment_ids.sorted(key=lambda a: a.id)
@@ -1426,9 +1389,9 @@ class WahaMessage(models.Model):
             
             _logger.info('Message sent successfully: %s', msg_uid)
             
-            # Update chat
-            if self.waha_chat_id:
-                self.waha_chat_id.update_last_message()
+            # Update channel activity
+            if self.discuss_channel_id:
+                self.discuss_channel_id._touch_wa_activity()
             
             return msg_uid
             
@@ -1535,16 +1498,16 @@ class WahaMessage(models.Model):
         }
     
     def action_view_chat(self):
-        """Open chat form"""
+        """Open the WhatsApp discuss channel"""
         self.ensure_one()
         
-        if not self.waha_chat_id:
-            raise UserError(_('No linked chat'))
+        if not self.discuss_channel_id:
+            raise UserError(_('No linked channel'))
         
         return {
             'type': 'ir.actions.act_window',
-            'res_model': 'waha.chat',
-            'res_id': self.waha_chat_id.id,
+            'res_model': 'discuss.channel',
+            'res_id': self.discuss_channel_id.id,
             'view_mode': 'form',
             'target': 'current',
         }

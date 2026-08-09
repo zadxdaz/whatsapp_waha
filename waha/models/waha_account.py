@@ -412,7 +412,7 @@ class WahaAccount(models.Model):
             raise UserError(_("Error disconnecting: %s") % str(e))
 
     def action_repair_discuss_channels(self):
-        """Create missing discuss.channel for every waha.chat that doesn't have one.
+        """Ensure every distinct WhatsApp chat has a discuss.channel.
         Also migrates existing channels from channel_type='whatsapp' to 'waha'."""
         self.ensure_one()
 
@@ -425,18 +425,26 @@ class WahaAccount(models.Model):
             old_channels.sudo().write({'channel_type': 'waha'})
             _logger.info('Migrated %d channels from whatsapp to waha type', len(old_channels))
 
-        # Create channels for chats that don't have one yet
-        chats_without_channel = self.env['waha.chat'].search([
-            ('wa_account_id', '=', self.id),
-            ('discuss_channel_id', '=', False),
-        ])
+        # Ensure a discuss.channel exists for every distinct raw_chat_id in waha.message
+        Message = self.env['waha.message'].sudo()
+        Message._cr.execute("""
+            SELECT DISTINCT raw_chat_id
+            FROM waha_message
+            WHERE wa_account_id = %s AND raw_chat_id IS NOT NULL AND raw_chat_id != ''
+        """, (self.id,))
+        raw_chat_ids = [row[0] for row in Message._cr.fetchall()]
+
         repaired = 0
-        for chat in chats_without_channel:
+        for raw_chat_id in raw_chat_ids:
             try:
-                chat._ensure_discuss_channel()
-                repaired += 1
+                channel = self.env['discuss.channel'].find_or_create_wa(
+                    wa_account=self,
+                    chat_id=raw_chat_id,
+                )
+                if channel:
+                    repaired += 1
             except Exception as e:
-                _logger.warning('Could not repair channel for chat %s: %s', chat.id, e)
+                _logger.warning('Could not repair channel for chat %s: %s', raw_chat_id, e)
 
         _logger.info('Repaired %d discuss channels for account %s', repaired, self.name)
         return {
@@ -457,7 +465,7 @@ class WahaAccount(models.Model):
             ('wa_account_id', '=', self.id),
             ('mail_message_id', '=', False),
             ('message_type', '=', 'outbound'),
-            ('waha_chat_id.discuss_channel_id', '!=', False),
+            ('discuss_channel_id', '!=', False),
         ])
         repaired_outbound = outbound_to_link._backfill_missing_mail_message_id()
 
@@ -465,7 +473,7 @@ class WahaAccount(models.Model):
             ('wa_account_id', '=', self.id),
             ('mail_message_id', '=', False),
             ('message_type', '=', 'inbound'),
-            ('waha_chat_id.discuss_channel_id', '!=', False),
+            ('discuss_channel_id', '!=', False),
         ])
         _logger.info(
             'Re-syncing %d inbound messages and repaired %d outbound links for account %s',
@@ -491,7 +499,7 @@ class WahaAccount(models.Model):
         Fetch recent chats and recent messages from each chat, persist to DB
         
         Compatible with refactored architecture:
-        - Uses waha.chat.find_or_create() for chats
+        - Uses discuss.channel.find_or_create_wa() for chats
         - Creates messages with raw_chat_id and raw_sender_phone
         - Auto-compute handles all relationships automatically
         """
@@ -551,14 +559,14 @@ class WahaAccount(models.Model):
                     
                     _logger.info('Processing chat %d/%d: %s (group=%s)', idx, len(chats), chat_name, is_group)
                     
-                    # Use waha.chat.find_or_create (handles groups, channels, partners)
-                    waha_chat = self.env['waha.chat'].find_or_create(
+                    # Use discuss.channel.find_or_create_wa (handles groups, channels, partners)
+                    channel = self.env['discuss.channel'].find_or_create_wa(
                         wa_account=self,
                         chat_id=chat_id,
                         partner=None  # Will auto-create if needed
                     )
                     
-                    if waha_chat:
+                    if channel:
                         chats_created += 1
                     
                     # Get messages for this chat
@@ -614,6 +622,7 @@ class WahaAccount(models.Model):
                             # Create message with raw fields (auto-compute handles rest)
                             vals = {
                                 'wa_account_id': self.id,
+                                'discuss_channel_id': channel.id,
                                 'msg_uid': msg_uid,
                                 'message_type': 'outbound' if context['from_me'] else 'inbound',
                                 'content_type': content_type,
@@ -639,9 +648,8 @@ class WahaAccount(models.Model):
                                     vals['reply_to_msg_uid'] = original_msg.msg_uid
                             
                             # Create message - auto-compute will handle:
-                            # 1. waha_chat_id
-                            # 2. partner_id
-                            # 3. mail_message_id (Discuss message)
+                            # 1. waha_partner_id
+                            # 2. mail_message_id (Discuss message)
                             waha_msg = self.env['waha.message'].with_context(
                                 allow_outbound_discuss_sync=True
                             ).create(vals)
@@ -661,8 +669,8 @@ class WahaAccount(models.Model):
                             continue
                     
                     # Update chat metadata
-                    if waha_chat:
-                        waha_chat.update_last_message()
+                    if channel:
+                        channel._touch_wa_activity()
                     
                 except Exception as e:
                     _logger.exception('Error processing chat %s: %s', chat_id, str(e))
@@ -811,7 +819,7 @@ class WahaAccount(models.Model):
         Args:
             number: Phone number (can be with or without +)
             message_type: 'text', 'image', 'document', 'video', 'audio'
-            **kwargs: body, media_data, caption, filename, mimetype, waha_chat_id, etc.
+            **kwargs: body, media_data, caption, filename, mimetype, chat_id, etc.
         
         Returns:
             dict: Response from WAHA API with message ID
@@ -829,11 +837,10 @@ class WahaAccount(models.Model):
 
         try:
             # Check if we have a pre-built chat_id from a received message
-            waha_chat_id = kwargs.pop('waha_chat_id', None)
+            chat_id = kwargs.pop('chat_id', None)
             
-            if waha_chat_id:
-                chat_id = waha_chat_id
-                _logger.info('Using provided waha_chat_id: %s', chat_id)
+            if chat_id:
+                _logger.info('Using provided chat_id: %s', chat_id)
             else:
                 # Normalize phone number
                 phone_clean = self._normalize_phone_number(number)

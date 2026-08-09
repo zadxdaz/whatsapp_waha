@@ -6,15 +6,14 @@ from odoo.exceptions import UserError
 from .common import WahaTestCommon
 
 _MSG_API = 'odoo.addons.waha.models.waha_message.WahaApi'
-_CHAT_API = 'odoo.addons.waha.models.waha_chat.WahaApi'
 _PARTNER_API = 'odoo.addons.waha.models.waha_partner.WahaApi'
 
-# Patch all three APIs at once to prevent real HTTP calls in create() chains
-ALL_APIS = [_MSG_API, _CHAT_API, _PARTNER_API]
+# Patch both APIs at once to prevent real HTTP calls in create() chains
+ALL_APIS = [_MSG_API, _PARTNER_API]
 
 
 def _patch_all_apis(**msg_methods):
-    """Patch WahaApi in all three model modules simultaneously."""
+    """Patch WahaApi in both model modules simultaneously."""
     from contextlib import ExitStack
     from unittest.mock import patch, MagicMock
 
@@ -23,7 +22,6 @@ def _patch_all_apis(**msg_methods):
     for name, retval in msg_methods.items():
         getattr(msg_instance, name).return_value = retval
     msg_mock = stack.enter_context(patch(_MSG_API, return_value=msg_instance))
-    stack.enter_context(patch(_CHAT_API))
     stack.enter_context(patch(_PARTNER_API))
     return stack, msg_instance
 
@@ -72,32 +70,36 @@ class TestComputeContentType(WahaTestCommon):
         self.assertEqual(self._content_type({'type': 'chat', 'body': 'hi'}), 'text')
 
 
-class TestComputeWahaChatId(WahaTestCommon):
-    """_compute_waha_chat_id — pure lookup, never creates records."""
+class TestComputeDiscussChannelId(WahaTestCommon):
+    """_compute_discuss_channel_id — pure lookup, never creates records."""
 
-    def test_finds_existing_chat(self):
-        chat = self.make_waha_chat('5491100001000@c.us')
+    def test_finds_existing_channel(self):
+        channel = self.make_waha_channel('5491100001000@c.us')
         msg = self.env['waha.message'].new({
             'wa_account_id': self.account.id,
             'body': 'test',
             'message_type': 'inbound',
             'raw_chat_id': '5491100001000@c.us',
         })
-        msg._compute_waha_chat_id()
-        self.assertEqual(msg.waha_chat_id, chat)
+        msg._compute_discuss_channel_id()
+        self.assertEqual(msg.discuss_channel_id, channel)
 
-    def test_returns_false_when_chat_missing(self):
-        """Must not create a new waha.chat record."""
-        count_before = self.env['waha.chat'].search_count([])
+    def test_returns_false_when_channel_missing(self):
+        """Must not create a new discuss.channel record."""
+        count_before = self.env['discuss.channel'].search_count([
+            ('is_whatsapp', '=', True),
+        ])
         msg = self.env['waha.message'].new({
             'wa_account_id': self.account.id,
             'body': 'test',
             'message_type': 'inbound',
             'raw_chat_id': '99999000001@c.us',
         })
-        msg._compute_waha_chat_id()
-        count_after = self.env['waha.chat'].search_count([])
-        self.assertFalse(msg.waha_chat_id)
+        msg._compute_discuss_channel_id()
+        count_after = self.env['discuss.channel'].search_count([
+            ('is_whatsapp', '=', True),
+        ])
+        self.assertFalse(msg.discuss_channel_id)
         self.assertEqual(count_before, count_after)
 
     def test_returns_false_when_raw_chat_id_empty(self):
@@ -107,12 +109,12 @@ class TestComputeWahaChatId(WahaTestCommon):
             'message_type': 'inbound',
             'raw_chat_id': False,
         })
-        msg._compute_waha_chat_id()
-        self.assertFalse(msg.waha_chat_id)
+        msg._compute_discuss_channel_id()
+        self.assertFalse(msg.discuss_channel_id)
 
 
 class TestComputeWahaPartnerId(WahaTestCommon):
-    """_compute_waha_partner_id — pure lookup by LID then phone, never creates."""
+    """_compute_waha_partner_id — lookup by LID then phone, auto-creates as side-effect."""
 
     def test_finds_by_lid(self):
         partner = self.make_waha_partner(phone='5491100002001', lid='lid_001')
@@ -147,8 +149,8 @@ class TestComputeWahaPartnerId(WahaTestCommon):
         msg._compute_waha_partner_id()
         self.assertEqual(msg.waha_partner_id, partner)
 
-    def test_returns_false_when_not_found(self):
-        """Must not call find_or_create — just return False."""
+    def test_auto_creates_when_not_found(self):
+        """Not found → partner is auto-created (find_or_create_by_lid_or_phone)."""
         count_before = self.env['waha.partner'].search_count([])
         msg = self.env['waha.message'].new({
             'wa_account_id': self.account.id,
@@ -157,8 +159,8 @@ class TestComputeWahaPartnerId(WahaTestCommon):
         })
         msg._compute_waha_partner_id()
         count_after = self.env['waha.partner'].search_count([])
-        self.assertFalse(msg.waha_partner_id)
-        self.assertEqual(count_before, count_after)
+        self.assertTrue(msg.waha_partner_id)
+        self.assertEqual(count_after, count_before + 1)
 
     def test_skips_group_phone(self):
         msg = self.env['waha.message'].new({
@@ -188,10 +190,29 @@ class TestComputeWahaPartnerId(WahaTestCommon):
 
 
 class TestCreateOverride(WahaTestCommon):
-    """create() — chat and partner created as side-effects."""
+    """create() — channel is pure lookup, partner auto-created as side-effect."""
 
-    def test_create_builds_waha_chat_when_missing(self):
-        with patch(_MSG_API), patch(_CHAT_API), patch(_PARTNER_API):
+    def test_create_links_explicit_channel(self):
+        channel = self.make_waha_channel('5491100003001@c.us')
+        with patch(_MSG_API), patch(_PARTNER_API):
+            msg = self.env['waha.message'].create({
+                'wa_account_id': self.account.id,
+                'discuss_channel_id': channel.id,
+                'body': 'Hello',
+                'message_type': 'inbound',
+                'state': 'received',
+                'raw_chat_id': '5491100003001@c.us',
+                'raw_sender_phone': '5491100003001',
+            })
+        self.assertTrue(msg.discuss_channel_id)
+        self.assertEqual(msg.discuss_channel_id.wa_chat_id, '5491100003001@c.us')
+
+    def test_create_does_not_auto_create_channel(self):
+        """create() must not fabricate a discuss.channel — callers do that."""
+        count_before = self.env['discuss.channel'].search_count([
+            ('is_whatsapp', '=', True),
+        ])
+        with patch(_MSG_API), patch(_PARTNER_API):
             msg = self.env['waha.message'].create({
                 'wa_account_id': self.account.id,
                 'body': 'Hello',
@@ -200,11 +221,14 @@ class TestCreateOverride(WahaTestCommon):
                 'raw_chat_id': '5491100003001@c.us',
                 'raw_sender_phone': '5491100003001',
             })
-        self.assertTrue(msg.waha_chat_id)
-        self.assertEqual(msg.waha_chat_id.wa_chat_id, '5491100003001@c.us')
+        count_after = self.env['discuss.channel'].search_count([
+            ('is_whatsapp', '=', True),
+        ])
+        self.assertFalse(msg.discuss_channel_id)
+        self.assertEqual(count_before, count_after)
 
     def test_create_builds_waha_partner_when_missing(self):
-        with patch(_MSG_API), patch(_CHAT_API), patch(_PARTNER_API):
+        with patch(_MSG_API), patch(_PARTNER_API):
             msg = self.env['waha.message'].create({
                 'wa_account_id': self.account.id,
                 'body': 'Hello',
@@ -215,29 +239,30 @@ class TestCreateOverride(WahaTestCommon):
             })
         self.assertTrue(msg.waha_partner_id)
 
-    def test_create_reuses_existing_chat(self):
-        chat = self.make_waha_chat('5491100003003@c.us')
-        chat_count_before = self.env['waha.chat'].search_count([
+    def test_create_reuses_existing_channel(self):
+        channel = self.make_waha_channel('5491100003003@c.us')
+        chat_count_before = self.env['discuss.channel'].search_count([
             ('wa_chat_id', '=', '5491100003003@c.us')
         ])
-        with patch(_MSG_API), patch(_CHAT_API), patch(_PARTNER_API):
+        with patch(_MSG_API), patch(_PARTNER_API):
             msg = self.env['waha.message'].create({
                 'wa_account_id': self.account.id,
+                'discuss_channel_id': channel.id,
                 'body': 'Hello',
                 'message_type': 'inbound',
                 'state': 'received',
                 'raw_chat_id': '5491100003003@c.us',
                 'raw_sender_phone': '5491100003003',
             })
-        chat_count_after = self.env['waha.chat'].search_count([
+        chat_count_after = self.env['discuss.channel'].search_count([
             ('wa_chat_id', '=', '5491100003003@c.us')
         ])
-        self.assertEqual(msg.waha_chat_id, chat)
+        self.assertEqual(msg.discuss_channel_id, channel)
         self.assertEqual(chat_count_before, chat_count_after)
 
     def test_create_skips_partner_for_group_sender(self):
         partner_count_before = self.env['waha.partner'].search_count([])
-        with patch(_MSG_API), patch(_CHAT_API), patch(_PARTNER_API):
+        with patch(_MSG_API), patch(_PARTNER_API):
             self.env['waha.message'].create({
                 'wa_account_id': self.account.id,
                 'body': 'Group msg',
@@ -257,9 +282,8 @@ class TestComputeMsgUid(WahaTestCommon):
                          api_response=None):
         """Helper to create an outgoing message with mocked WAHA API."""
         api_response = api_response or {'id': 'waha_auto_001'}
-        # Pre-create a chat so _compute_waha_chat_id finds it (avoiding the
-        # waha_chat.WahaApi patch interfering with the message API mock)
-        chat = self.make_waha_chat(chat_id)
+        # Pre-create a channel so _compute_discuss_channel_id finds it
+        channel = self.make_waha_channel(chat_id)
         waha_partner = self.make_waha_partner(phone=phone)
 
         with patch(_MSG_API) as MockMsgApi, patch(_PARTNER_API):
@@ -287,7 +311,7 @@ class TestComputeMsgUid(WahaTestCommon):
         self.assertTrue(msg.sent_date)
 
     def test_inbound_never_calls_api(self):
-        chat = self.make_waha_chat('5491100004010@c.us')
+        channel = self.make_waha_channel('5491100004010@c.us')
         waha_partner = self.make_waha_partner(phone='5491100004010')
         with patch(_MSG_API) as MockMsgApi, patch(_PARTNER_API):
             self.env['waha.message'].create({
@@ -302,7 +326,7 @@ class TestComputeMsgUid(WahaTestCommon):
             MockMsgApi.return_value.send_text.assert_not_called()
 
     def test_draft_never_sends(self):
-        chat = self.make_waha_chat('5491100004011@c.us')
+        channel = self.make_waha_channel('5491100004011@c.us')
         with patch(_MSG_API) as MockMsgApi, patch(_PARTNER_API):
             self.env['waha.message'].create({
                 'wa_account_id': self.account.id,
@@ -315,7 +339,7 @@ class TestComputeMsgUid(WahaTestCommon):
             MockMsgApi.return_value.send_text.assert_not_called()
 
     def test_api_error_sets_error_state(self):
-        chat = self.make_waha_chat('5491100004020@c.us')
+        channel = self.make_waha_channel('5491100004020@c.us')
         waha_partner = self.make_waha_partner(phone='5491100004020')
         with patch(_MSG_API) as MockMsgApi, patch(_PARTNER_API):
             MockMsgApi.return_value.send_text.side_effect = Exception('network fail')
@@ -331,7 +355,7 @@ class TestComputeMsgUid(WahaTestCommon):
         self.assertTrue(msg.failure_reason)
 
     def test_no_lid_for_user_error_maps_to_contact_not_found(self):
-        chat = self.make_waha_chat('5491100004021@c.us')
+        channel = self.make_waha_channel('5491100004021@c.us')
         waha_partner = self.make_waha_partner(phone='5491100004021')
         with patch(_MSG_API) as MockMsgApi, patch(_PARTNER_API):
             MockMsgApi.return_value.send_text.side_effect = Exception('No LID for user')
@@ -346,7 +370,7 @@ class TestComputeMsgUid(WahaTestCommon):
         self.assertEqual(msg.failure_type, 'contact_not_found')
 
     def test_invalid_session_error_maps_to_account(self):
-        chat = self.make_waha_chat('5491100004022@c.us')
+        channel = self.make_waha_channel('5491100004022@c.us')
         waha_partner = self.make_waha_partner(phone='5491100004022')
         with patch(_MSG_API) as MockMsgApi, patch(_PARTNER_API):
             MockMsgApi.return_value.send_text.side_effect = Exception('Invalid session')
@@ -365,7 +389,7 @@ class TestUpdateStatusFromWebhook(WahaTestCommon):
     """update_status_from_webhook — ACK-to-state mapping and no rollback."""
 
     def _make_sent_msg(self):
-        chat = self.make_waha_chat('5491100005001@c.us')
+        channel = self.make_waha_channel('5491100005001@c.us')
         return self.env['waha.message'].create({
             'wa_account_id': self.account.id,
             'msg_uid': 'ack_test_msg',
@@ -382,7 +406,7 @@ class TestUpdateStatusFromWebhook(WahaTestCommon):
         self.assertEqual(msg.state, 'error')
 
     def test_ack_2_sets_sent_with_date(self):
-        chat = self.make_waha_chat('5491100005002@c.us')
+        channel = self.make_waha_channel('5491100005002@c.us')
         msg = self.env['waha.message'].create({
             'wa_account_id': self.account.id,
             'msg_uid': 'ack_2_msg',
@@ -434,10 +458,10 @@ class TestDiscussMessagePostBridge(WahaTestCommon):
     """mail.thread bridge — keep Odoo mail.message linked to waha.message."""
 
     def test_outbound_without_mail_message_is_not_duplicated_in_discuss(self):
-        chat = self.make_waha_chat('5491100006000@c.us')
+        channel = self.make_waha_channel('5491100006000@c.us')
         count_before = self.env['mail.message'].search_count([
             ('model', '=', 'discuss.channel'),
-            ('res_id', '=', chat.discuss_channel_id.id),
+            ('res_id', '=', channel.id),
         ])
         self.env['waha.message'].create({
             'wa_account_id': self.account.id,
@@ -450,17 +474,17 @@ class TestDiscussMessagePostBridge(WahaTestCommon):
         })
         count_after = self.env['mail.message'].search_count([
             ('model', '=', 'discuss.channel'),
-            ('res_id', '=', chat.discuss_channel_id.id),
+            ('res_id', '=', channel.id),
         ])
         self.assertEqual(count_after, count_before)
 
     def test_outbound_discuss_post_links_existing_mail_message(self):
-        chat = self.make_waha_chat('5491100006001@c.us')
+        channel = self.make_waha_channel('5491100006001@c.us')
         with patch(_MSG_API) as MockApi:
             MockApi.return_value.send_text.return_value = {
                 'id': 'true_5491100006001@c.us_outbound_linked'
             }
-            mail_message = chat.discuss_channel_id.message_post(
+            mail_message = channel.message_post(
                 body='Message from Odoo',
                 author_id=self.env.user.partner_id.id,
             )
@@ -472,17 +496,17 @@ class TestDiscussMessagePostBridge(WahaTestCommon):
         self.assertEqual(waha_message.mail_message_id, mail_message)
 
     def test_outbound_discuss_reply_sets_waha_parent(self):
-        chat = self.make_waha_chat('5491100006002@c.us')
+        channel = self.make_waha_channel('5491100006002@c.us')
         with patch(_MSG_API) as MockApi:
             MockApi.return_value.send_text.side_effect = [
                 {'id': 'true_5491100006002@c.us_parent'},
                 {'id': 'true_5491100006002@c.us_child'},
             ]
-            parent_mail = chat.discuss_channel_id.message_post(
+            parent_mail = channel.message_post(
                 body='Parent from Odoo',
                 author_id=self.env.user.partner_id.id,
             )
-            child_mail = chat.discuss_channel_id.message_post(
+            child_mail = channel.message_post(
                 body='Child from Odoo',
                 author_id=self.env.user.partner_id.id,
                 parent_id=parent_mail.id,
@@ -498,9 +522,9 @@ class TestDiscussMessagePostBridge(WahaTestCommon):
 
 
     def test_inbound_reply_uses_existing_unlinked_outbound_parent_mail(self):
-        chat = self.make_waha_chat('5491100006003@c.us')
+        channel = self.make_waha_channel('5491100006003@c.us')
         self.make_waha_partner(phone='5491100006003')
-        parent_mail = chat.discuss_channel_id.with_context(skip_whatsapp_send=True).message_post(
+        parent_mail = channel.with_context(skip_whatsapp_send=True).message_post(
             body='Parent from Odoo without link',
             author_id=self.env.user.partner_id.id,
         )
@@ -531,9 +555,9 @@ class TestDiscussMessagePostBridge(WahaTestCommon):
         self.assertEqual(reply.mail_message_id.parent_id, parent_mail)
 
     def test_backfill_missing_mail_message_id_ignores_ambiguous_matches(self):
-        chat = self.make_waha_chat('5491100006004@c.us')
+        channel = self.make_waha_channel('5491100006004@c.us')
         for _idx in range(2):
-            chat.discuss_channel_id.with_context(skip_whatsapp_send=True).message_post(
+            channel.with_context(skip_whatsapp_send=True).message_post(
                 body='Ambiguous parent',
                 author_id=self.env.user.partner_id.id,
             )

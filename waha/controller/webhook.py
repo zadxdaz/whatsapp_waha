@@ -202,10 +202,41 @@ class WahaWebhookController(http.Controller):
             else:
                 valid_payload = payload
             
+            # Resolve/create the WhatsApp channel BEFORE message creation.
+            # discuss.channel is the single source of truth for conversations;
+            # waha.message._compute_discuss_channel_id is a pure lookup and
+            # never creates channels, so this explicit factory is the entry point.
+            channel = None
+            partner = None
+            if context['chat_id']:
+                if context['is_group']:
+                    channel = request.env['discuss.channel'].sudo().find_or_create_wa(
+                        wa_account=account,
+                        chat_id=context['chat_id'],
+                    )
+                else:
+                    waha_partner = request.env['waha.partner'].sudo().find_or_create_by_lid_or_phone(
+                        lid=context['sender_lid'],
+                        phone=context['sender_phone'],
+                        wa_account=account,
+                        auto_enrich=True,
+                    )
+                    partner = waha_partner.partner_id if waha_partner else False
+                    channel = request.env['discuss.channel'].sudo().find_or_create_wa(
+                        wa_account=account,
+                        chat_id=context['chat_id'],
+                        partner=partner,
+                    )
+                _logger.info(
+                    'Resolved WhatsApp channel %s for chat_id %s (group=%s)',
+                    channel.id if channel else None, context['chat_id'], context['is_group'],
+                )
+            
             # Create waha.message with raw fields (relationships auto-computed)
             vals = {
                 'msg_uid': context['msg_uid'],
                 'wa_account_id': account.id,
+                'discuss_channel_id': channel.id if channel else False,
                 'message_type': 'outbound' if context['from_me'] else 'inbound',
                 'state': 'sent' if context['from_me'] else 'received',
                 'body': context['body'],
@@ -251,29 +282,25 @@ class WahaWebhookController(http.Controller):
             _logger.info('Created waha.message: %s (type=%s, relations auto-computed)',
                         message.id, context['from_me'] and 'outbound' or 'inbound')
             
-            # Get auto-computed chat and partner
-            chat = message.waha_chat_id
+            # Get auto-computed channel and partner
+            channel = message.discuss_channel_id
             partner = message.partner_id
             
-            _logger.info('Auto-computed relations: chat=%s (channel=%s), partner=%s, mail_message=%s', 
-                        chat.id if chat else None,
-                        chat.discuss_channel_id.id if (chat and chat.discuss_channel_id) else None,
+            _logger.info('Resolved relations: channel=%s, partner=%s, mail_message=%s', 
+                        channel.id if channel else None,
                         partner.id if partner else None,
                         message.mail_message_id.id if message.mail_message_id else None)
             
-            if not chat:
-                _logger.error('Failed to auto-compute chat for message %s', message.id)
+            if not channel:
+                _logger.error('Failed to resolve channel for message %s', message.id)
                 return
             
             # Log discuss channel details
-            if chat.discuss_channel_id:
-                _logger.info('Discuss channel details: id=%s, name=%s, type=%s, members=%s',
-                           chat.discuss_channel_id.id,
-                           chat.discuss_channel_id.name,
-                           chat.discuss_channel_id.channel_type,
-                           len(chat.discuss_channel_id.channel_partner_ids))
-            else:
-                _logger.warning('Chat %s has no discuss_channel_id!', chat.id)
+            _logger.info('Discuss channel details: id=%s, name=%s, type=%s, members=%s',
+                       channel.id,
+                       channel.name,
+                       channel.channel_type,
+                       len(channel.channel_partner_ids))
             
             # Only create discuss.message for INBOUND messages
             # Outbound messages already have mail_message_id from _compute_mail_message_id
@@ -282,7 +309,7 @@ class WahaWebhookController(http.Controller):
                     _logger.warning('No partner for inbound message %s', message.id)
                 
                 # Create discuss.message in channel (auto-computed)
-                discuss_channel = chat.discuss_channel_id
+                discuss_channel = channel
                 if discuss_channel and message.mail_message_id:
                     _logger.info('Discuss message auto-created: %s', message.mail_message_id.id)
                 else:
@@ -293,8 +320,8 @@ class WahaWebhookController(http.Controller):
             # Process media attachments - now delegated to waha.message
             message.process_payload_media()
             
-            # Update chat metadata
-            chat.update_last_message(message.wa_timestamp)
+            # Update channel activity
+            channel._touch_wa_activity(message.wa_timestamp)
             
             _logger.info('Successfully processed incoming message: %s', message.id)
             

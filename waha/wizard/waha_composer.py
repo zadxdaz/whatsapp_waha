@@ -103,11 +103,18 @@ class WahaComposer(models.TransientModel):
         # Normalize phone number
         normalized_phone = self.mobile_number.replace('+', '').replace(' ', '').replace('-', '')
         chat_id = f"{normalized_phone}@c.us"
+
+        # Resolve/create the WhatsApp channel (source of truth: discuss.channel)
+        channel = self.env['discuss.channel'].find_or_create_wa(
+            wa_account=self.wa_account_id,
+            chat_id=chat_id,
+        )
         
         # Prepare message data
-        # waha_chat_id and waha_partner_id will be auto-computed from raw fields
+        # discuss_channel_id and waha_partner_id will be auto-computed from raw fields
         message_vals = {
             'wa_account_id': self.wa_account_id.id,
+            'discuss_channel_id': channel.id,
             'raw_chat_id': chat_id,
             'raw_sender_phone': normalized_phone,
             'body': clean_body,
@@ -119,7 +126,7 @@ class WahaComposer(models.TransientModel):
             message_vals['wa_template_id'] = self.wa_template_id.id
         
         # Create message
-        # This will auto-compute: waha_chat_id, waha_partner_id, mail_message_id, and msg_uid (send)
+        # This will auto-compute: discuss_channel_id, waha_partner_id, mail_message_id, and msg_uid (send)
         message = self.env['waha.message'].create(message_vals)
         
         # Handle attachments - link them to the message
@@ -150,10 +157,17 @@ class WahaComposer(models.TransientModel):
         # Normalize phone number
         normalized_phone = self.mobile_number.replace('+', '').replace(' ', '').replace('-', '')
         chat_id = f"{normalized_phone}@c.us"
+
+        # Resolve/create the WhatsApp channel (source of truth: discuss.channel)
+        channel = self.env['discuss.channel'].find_or_create_wa(
+            wa_account=self.wa_account_id,
+            chat_id=chat_id,
+        )
         
         # Create message in draft state (won't auto-send)
         message_vals = {
             'wa_account_id': self.wa_account_id.id,
+            'discuss_channel_id': channel.id,
             'raw_chat_id': chat_id,
             'raw_sender_phone': normalized_phone,
             'body': clean_body,
@@ -164,7 +178,7 @@ class WahaComposer(models.TransientModel):
         if self.wa_template_id:
             message_vals['wa_template_id'] = self.wa_template_id.id
         
-        # Create message - waha_chat_id and waha_partner_id auto-computed
+        # Create message - discuss_channel_id and waha_partner_id auto-computed
         message = self.env['waha.message'].create(message_vals)
         
         # Handle attachments
